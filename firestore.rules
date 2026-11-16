@@ -1,0 +1,1470 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // 1. Global Default-Deny Catch-All
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // 2. Reusable Security Primitives
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isVerifiedUser() {
+      return isSignedIn() && request.auth.token.email_verified == true;
+    }
+
+    function isOwner(userId) {
+      return isVerifiedUser() && request.auth.uid == userId;
+    }
+
+    // Bootstrapped Application Administrator (strictly requires email_verified == true to prevent spoof attacks)
+    // IMPORTANT: Admin role NEVER grants read/write access to /users/{otherUserId} or private career subcollections.
+    function isBootstrappedAdmin() {
+      return isVerifiedUser() &&
+             request.auth.token.email is string &&
+             request.auth.token.email.lower() == 'hmcrafts@craftsconsulting.com';
+    }
+
+    function isAdmin() {
+      return isBootstrappedAdmin() ||
+             (isVerifiedUser() && exists(/databases/$(database)/documents/admins/$(request.auth.uid)));
+    }
+
+    function isValidId(id) {
+      return id is string && id.size() >= 1 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function isValidTokenHash(hash) {
+      return hash is string && hash.size() == 64 && hash.matches('^[a-f0-9]{64}$');
+    }
+
+    function isOptionalId(id) {
+      return id is string && id.size() <= 128 && (id.size() == 0 || id.matches('^[a-zA-Z0-9_\\-]+$'));
+    }
+
+    function isBoundedStringList(arr, maxItems, maxFirstLen) {
+      return arr is list &&
+             arr.size() <= maxItems &&
+             (arr.size() == 0 || (arr[0] is string && arr[0].size() <= maxFirstLen));
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    // Master Gate relational check for subcollections (supports atomic initial seed batch + live writes)
+    function isActiveWorkspaceMember(userId) {
+      return (exists(/databases/$(database)/documents/users/$(userId)) &&
+              get(/databases/$(database)/documents/users/$(userId)).data.userId == request.auth.uid) ||
+             (existsAfter(/databases/$(database)/documents/users/$(userId)) &&
+              getAfter(/databases/$(database)/documents/users/$(userId)).data.userId == request.auth.uid);
+    }
+
+    function hasParentOpportunity(userId, oppId) {
+      return isValidId(oppId) && (
+        exists(/databases/$(database)/documents/users/$(userId)/opportunities/$(oppId)) ||
+        existsAfter(/databases/$(database)/documents/users/$(userId)/opportunities/$(oppId))
+      );
+    }
+
+    function hasParentContact(userId, contactId) {
+      return isValidId(contactId) && (
+        exists(/databases/$(database)/documents/users/$(userId)/contacts/$(contactId)) ||
+        existsAfter(/databases/$(database)/documents/users/$(userId)/contacts/$(contactId))
+      );
+    }
+
+    function hasParentDocumentMeta(userId, docId) {
+      return isValidId(docId) && (
+        exists(/databases/$(database)/documents/users/$(userId)/documents/$(docId)) ||
+        existsAfter(/databases/$(database)/documents/users/$(userId)/documents/$(docId))
+      );
+    }
+
+    function hasAccessiblePrimaryEvidence(userId, evidenceIds) {
+      return evidenceIds.size() == 0 || (
+        isValidId(evidenceIds[0]) && (
+          exists(/databases/$(database)/documents/users/$(userId)/evidence/$(evidenceIds[0])) ||
+          existsAfter(/databases/$(database)/documents/users/$(userId)/evidence/$(evidenceIds[0])) ||
+          exists(/databases/$(database)/documents/users/$(userId)/documents/$(evidenceIds[0])) ||
+          existsAfter(/databases/$(database)/documents/users/$(userId)/documents/$(evidenceIds[0]))
+        )
+      );
+    }
+
+    function isAllowedRelationshipTuple(srcType, relType, dstType) {
+      return (srcType == 'experience' && relType == 'demonstrates' && dstType == 'skill') ||
+             (srcType == 'evidence' && relType == 'supports' && dstType == 'experience') ||
+             (srcType == 'opportunity' && relType == 'has_requirement' && dstType == 'requirement') ||
+             (srcType == 'requirement' && relType == 'requires' && dstType == 'skill') ||
+             (srcType == 'learning' && relType == 'teaches' && dstType == 'skill') ||
+             (srcType == 'contact' && relType == 'claims_affiliation_with' && dstType == 'employer') ||
+             (srcType == 'contact' && relType == 'confirmed_affiliation_with' && dstType == 'employer') ||
+             (srcType == 'opportunity' && relType == 'offered_by' && dstType == 'employer') ||
+             (srcType == 'skill' && relType == 'adjacent_to' && dstType == 'opportunity');
+    }
+
+    // 3. Nested Map Blueprints & Entity Validation Helpers
+
+    function isValidAdminRecord(data) {
+      return isVerifiedUser() &&
+             data.keys().hasAll([
+               'id', 'uid', 'emailNormalized', 'displayName', 'grantedByUid', 'createdAt', 'updatedAt'
+             ]) &&
+             data.keys().hasOnly([
+               'id', 'uid', 'emailNormalized', 'displayName', 'grantedByUid', 'createdAt', 'updatedAt'
+             ]) &&
+             isValidId(data.id) &&
+             isValidId(data.uid) &&
+             data.id == data.uid &&
+             data.emailNormalized is string && data.emailNormalized.size() >= 3 && data.emailNormalized.size() <= 254 &&
+             data.displayName is string && data.displayName.size() <= 120 &&
+             isValidId(data.grantedByUid) &&
+             data.createdAt is timestamp &&
+             data.updatedAt is timestamp;
+    }
+
+    function isValidInvitation(data) {
+      return isVerifiedUser() &&
+             data.keys().hasAll([
+               'id', 'visibilityScope', 'invitationType', 'recipientDisplayName',
+               'recipientEmail', 'recipientEmailNormalized', 'maskedRecipientEmail',
+               'personalMessage', 'inviterUid', 'inviterDisplayName', 'currentTokenHash',
+               'status', 'deliveryChannel', 'deliveryProviderResult', 'manualLinkGenerated',
+               'sendAttemptCount', 'suggestedItems', 'createdAtIso', 'expiresAtIso',
+               'expiresAtEpochMs', 'acceptedAtIso', 'acceptedByUid', 'revokedAtIso',
+               'idempotencyKey', 'createdAt', 'updatedAt'
+             ]) &&
+             data.keys().hasOnly([
+               'id', 'visibilityScope', 'invitationType', 'recipientDisplayName',
+               'recipientEmail', 'recipientEmailNormalized', 'maskedRecipientEmail',
+               'personalMessage', 'inviterUid', 'inviterDisplayName', 'currentTokenHash',
+               'status', 'deliveryChannel', 'deliveryProviderResult', 'manualLinkGenerated',
+               'sendAttemptCount', 'suggestedItems', 'createdAtIso', 'expiresAtIso',
+               'expiresAtEpochMs', 'acceptedAtIso', 'acceptedByUid', 'revokedAtIso',
+               'idempotencyKey', 'createdAt', 'updatedAt'
+             ]) &&
+             isValidId(data.id) &&
+             data.visibilityScope == 'admin' &&
+             data.invitationType == 'job_seeker' &&
+             data.recipientDisplayName is string && data.recipientDisplayName.size() >= 1 && data.recipientDisplayName.size() <= 120 &&
+             data.recipientEmail is string && data.recipientEmail.size() >= 3 && data.recipientEmail.size() <= 254 &&
+             data.recipientEmailNormalized is string && data.recipientEmailNormalized.size() >= 3 && data.recipientEmailNormalized.size() <= 254 &&
+             data.maskedRecipientEmail is string && data.maskedRecipientEmail.size() >= 3 && data.maskedRecipientEmail.size() <= 254 &&
+             data.personalMessage is string && data.personalMessage.size() <= 500 &&
+             isValidId(data.inviterUid) &&
+             data.inviterDisplayName is string && data.inviterDisplayName.size() >= 1 && data.inviterDisplayName.size() <= 120 &&
+             isValidTokenHash(data.currentTokenHash) &&
+             data.status in ['pending_delivery', 'sent', 'delivery_failed', 'expired', 'revoked', 'accepted'] &&
+             data.deliveryChannel in ['email_provider', 'unconfigured', 'manual_link'] &&
+             data.deliveryProviderResult is string && data.deliveryProviderResult.size() <= 500 &&
+             data.manualLinkGenerated is bool &&
+             data.sendAttemptCount is number && data.sendAttemptCount >= 0 && data.sendAttemptCount <= 100 &&
+             isBoundedStringList(data.suggestedItems, 10, 300) &&
+             data.createdAtIso is string && data.createdAtIso.size() <= 40 &&
+             data.expiresAtIso is string && data.expiresAtIso.size() <= 40 &&
+             data.expiresAtEpochMs is number && data.expiresAtEpochMs > 0 &&
+             data.acceptedAtIso is string && data.acceptedAtIso.size() <= 40 &&
+             isOptionalId(data.acceptedByUid) &&
+             data.revokedAtIso is string && data.revokedAtIso.size() <= 40 &&
+             data.idempotencyKey is string && data.idempotencyKey.size() >= 1 && data.idempotencyKey.size() <= 128 &&
+             data.createdAt is timestamp &&
+             data.updatedAt is timestamp;
+    }
+
+    function isValidInvitationToken(data) {
+      return isVerifiedUser() &&
+             data.keys().hasAll([
+               'tokenHash', 'invitationId', 'invitationType', 'inviterDisplayName',
+               'maskedRecipientEmail', 'saltedEmailHash', 'tokenStatus',
+               'expiresAtIso', 'expiresAtEpochMs', 'createdAt', 'updatedAt'
+             ]) &&
+             data.keys().hasOnly([
+               'tokenHash', 'invitationId', 'invitationType', 'inviterDisplayName',
+               'maskedRecipientEmail', 'saltedEmailHash', 'tokenStatus',
+               'expiresAtIso', 'expiresAtEpochMs', 'createdAt', 'updatedAt'
+             ]) &&
+             isValidTokenHash(data.tokenHash) &&
+             isValidId(data.invitationId) &&
+             data.invitationType == 'job_seeker' &&
+             data.inviterDisplayName is string && data.inviterDisplayName.size() <= 120 &&
+             data.maskedRecipientEmail is string && data.maskedRecipientEmail.size() <= 254 &&
+             isValidTokenHash(data.saltedEmailHash) &&
+             data.tokenStatus in ['active', 'superseded', 'revoked', 'accepted'] &&
+             data.expiresAtIso is string && data.expiresAtIso.size() <= 40 &&
+             data.expiresAtEpochMs is number && data.expiresAtEpochMs > 0 &&
+             data.createdAt is timestamp &&
+             data.updatedAt is timestamp;
+    }
+
+    function isValidAuditLog(data) {
+      return isVerifiedUser() &&
+             data.keys().hasAll([
+               'id', 'visibilityScope', 'eventType', 'actorUid', 'targetId',
+               'outcome', 'summaryCode', 'createdAtIso', 'createdAt'
+             ]) &&
+             data.keys().hasOnly([
+               'id', 'visibilityScope', 'eventType', 'actorUid', 'targetId',
+               'outcome', 'summaryCode', 'createdAtIso', 'createdAt'
+             ]) &&
+             isValidId(data.id) &&
+             data.visibilityScope == 'admin' &&
+             data.eventType in [
+               'invitation_created',
+               'invitation_send_attempted',
+               'invitation_resent',
+               'invitation_manual_link_generated',
+               'invitation_revoked',
+               'invitation_accepted',
+               'workspace_created',
+               'sharing_permission_changed',
+               'account_deleted'
+             ] &&
+             data.actorUid == request.auth.uid &&
+             isValidId(data.actorUid) &&
+             isValidId(data.targetId) &&
+             data.outcome in ['success', 'failure', 'unconfigured'] &&
+             data.summaryCode is string && data.summaryCode.size() <= 200 &&
+             data.createdAtIso is string && data.createdAtIso.size() <= 40 &&
+             data.createdAt is timestamp;
+    }
+
+    function isValidSettingsMap(s) {
+      return s is map &&
+             s.keys().hasAll(['availableMinutesToday', 'allowServerSideAi', 'showSampleComparisonData']) &&
+             s.keys().hasOnly(['availableMinutesToday', 'allowServerSideAi', 'showSampleComparisonData']) &&
+             s.availableMinutesToday is number && s.availableMinutesToday >= 5 && s.availableMinutesToday <= 600 &&
+             s.allowServerSideAi is bool &&
+             s.showSampleComparisonData is bool;
+    }
+
+    function isValidSharingSettingsMap(sh) {
+      return sh is map &&
+             sh.keys().hasAll(['mode', 'reviewersEnabled', 'updatedAtIso']) &&
+             sh.keys().hasOnly(['mode', 'reviewersEnabled', 'updatedAtIso']) &&
+             sh.mode == 'private' &&
+             sh.reviewersEnabled == false &&
+             sh.updatedAtIso is string && sh.updatedAtIso.size() <= 40;
+    }
+
+    function isValidCompensationMap(c) {
+      return c is map &&
+             c.keys().hasAll([
+               'employerPublishedBase', 'employerPublishedVariable', 'variableAssumptionsNote',
+               'thirdPartyEstimate', 'thirdPartySource', 'compensationSourceNote', 'benefitsDocumented'
+             ]) &&
+             c.keys().hasOnly([
+               'employerPublishedBase', 'employerPublishedVariable', 'variableAssumptionsNote',
+               'thirdPartyEstimate', 'thirdPartySource', 'compensationSourceNote', 'benefitsDocumented'
+             ]) &&
+             c.employerPublishedBase is string && c.employerPublishedBase.size() <= 300 &&
+             c.employerPublishedVariable is string && c.employerPublishedVariable.size() <= 300 &&
+             c.variableAssumptionsNote is string && c.variableAssumptionsNote.size() <= 1000 &&
+             c.thirdPartyEstimate is string && c.thirdPartyEstimate.size() <= 300 &&
+             c.thirdPartySource is string && c.thirdPartySource.size() <= 300 &&
+             c.compensationSourceNote is string && c.compensationSourceNote.size() <= 500 &&
+             c.benefitsDocumented is string && c.benefitsDocumented.size() <= 1000;
+    }
+
+    function isValidLiveVerificationMap(lv) {
+      return lv is map &&
+             lv.keys().hasAll(['lastCheckedAt', 'liveAvailable', 'summary', 'sources']) &&
+             lv.keys().hasOnly(['lastCheckedAt', 'liveAvailable', 'summary', 'sources']) &&
+             lv.lastCheckedAt is string && lv.lastCheckedAt.size() <= 50 &&
+             lv.liveAvailable is bool &&
+             lv.summary is string && lv.summary.size() <= 4000 &&
+             lv.sources is list && lv.sources.size() <= 20;
+    }
+
+    function isValidChecklistMap(cl) {
+      return cl is map &&
+             cl.keys().hasAll([
+               'verifiedAllClaims', 'noInventedMetrics', 'noTrainingImpliedAsWork',
+               'placeholdersResolved', 'employerDestinationChecked'
+             ]) &&
+             cl.keys().hasOnly([
+               'verifiedAllClaims', 'noInventedMetrics', 'noTrainingImpliedAsWork',
+               'placeholdersResolved', 'employerDestinationChecked'
+             ]) &&
+             cl.verifiedAllClaims is bool &&
+             cl.noInventedMetrics is bool &&
+             cl.noTrainingImpliedAsWork is bool &&
+             cl.placeholdersResolved is bool &&
+             cl.employerDestinationChecked is bool;
+    }
+
+    function isValidUserProfile(data) {
+      return isVerifiedUser() &&
+             data.keys().hasAll([
+               'id', 'userId', 'fullName', 'location', 'educationSummary',
+               'rbtCertificationStatus', 'rbtCertificationNote', 'littleLeavesSoftwareUsed',
+               'otherExperienceNotes', 'masterResumeText', 'masterResumeUpdatedAt',
+               'profileVerifiedByNora', 'constraints', 'settings', 'crmSimulation',
+               'starterSeeded', 'createdAt', 'updatedAt'
+             ]) &&
+             data.keys().hasOnly([
+               'id', 'userId', 'fullName', 'location', 'educationSummary',
+               'rbtCertificationStatus', 'rbtCertificationNote', 'littleLeavesSoftwareUsed',
+               'otherExperienceNotes', 'masterResumeText', 'masterResumeUpdatedAt',
+               'profileVerifiedByNora', 'constraints', 'settings', 'crmSimulation',
+               'starterSeeded', 'onboardingWizard', 'sharingSettings', 'inviterSuggestions',
+               'createdAt', 'updatedAt'
+             ]) &&
+             isValidId(data.id) &&
+             data.userId == request.auth.uid &&
+             data.id == request.auth.uid &&
+             data.fullName is string && data.fullName.size() <= 200 &&
+             data.location is string && data.location.size() <= 200 &&
+             data.educationSummary is string && data.educationSummary.size() <= 1000 &&
+             data.rbtCertificationStatus in ['unverified', 'active', 'inactive_or_expired'] &&
+             data.rbtCertificationNote is string && data.rbtCertificationNote.size() <= 1000 &&
+             data.littleLeavesSoftwareUsed is string && data.littleLeavesSoftwareUsed.size() <= 300 &&
+             data.otherExperienceNotes is string && data.otherExperienceNotes.size() <= 2000 &&
+             data.masterResumeText is string && data.masterResumeText.size() <= 30000 &&
+             data.masterResumeUpdatedAt is string && data.masterResumeUpdatedAt.size() <= 40 &&
+             data.profileVerifiedByNora is bool &&
+             data.constraints is map && data.constraints.keys().size() <= 25 &&
+             isValidSettingsMap(data.settings) &&
+             data.crmSimulation is map &&
+             data.crmSimulation.keys().hasOnly(['searchedQueries', 'conversationLogs', 'followUpTasks', 'handoffNotes']) &&
+             data.starterSeeded is bool &&
+             (!('onboardingWizard' in data) || (data.onboardingWizard is map && data.onboardingWizard.keys().size() <= 20)) &&
+             (!('sharingSettings' in data) || isValidSharingSettingsMap(data.sharingSettings)) &&
+             (!('inviterSuggestions' in data) || (data.inviterSuggestions is list && data.inviterSuggestions.size() <= 10 && (data.inviterSuggestions.size() == 0 || data.inviterSuggestions[0] is map))) &&
+             data.createdAt is timestamp &&
+             data.updatedAt is timestamp;
+    }
+
+    function isValidEvidence(data) {
+      return isVerifiedUser() &&
+             data.keys().hasAll([
+               'id', 'userId', 'claimText', 'category', 'sourceDocumentOrConfirmation',
+               'sourceExcerpt', 'verificationStatus', 'dateAdded', 'mayUseInApplications',
+               'tags', 'sourceDocumentId', 'createdAt', 'updatedAt'
+             ]) &&
+             data.keys().hasOnly([
+               'id', 'userId', 'claimText', 'category', 'sourceDocumentOrConfirmation',
+               'sourceExcerpt', 'verificationStatus', 'dateAdded', 'mayUseInApplications',
+               'tags', 'sourceDocumentId', 'createdAt', 'updatedAt'
+             ]) &&
+             isValidId(data.id) &&
+             data.userId == request.auth.uid &&
+             data.claimText is string && data.claimText.size() >= 1 && data.claimText.size() <= 2000 &&
+             data.category in [
+               'demonstrated_skill',
+               'transferable_experience',
+               'training_in_progress',
+               'completed_training',
+               'not_yet_demonstrated'
+             ] &&
+             data.sourceDocumentOrConfirmation is string && data.sourceDocumentOrConfirmation.size() <= 500 &&
+             data.sourceExcerpt is string && data.sourceExcerpt.size() <= 2000 &&
+             data.verificationStatus in [
+               'Confirmed by Nora',
+               'Supported by uploaded document',
+               'Needs clarification',
+               'Draft wording only'
+             ] &&
+             data.dateAdded is string && data.dateAdded.size() <= 30 &&
+             data.mayUseInApplications is bool &&
+             isBoundedStringList(data.tags, 20, 80) &&
+             isOptionalId(data.sourceDocumentId) &&
+             data.createdAt is timestamp &&
+             data.updatedAt is timestamp;
+    }
+
+    function isValidOpportunity(data) {
+      return isVerifiedUser() &&
+             data.keys().hasAll([
+               'id', 'userId', 'employer', 'title', 'officialWebsite', 'postingUrl',
+               'applicationUrl', 'location', 'eligibleLocations', 'workArrangement',
+               'employmentType', 'datePosted', 'dateFirstFound', 'dateLastVerified',
+               'openingAvailabilityStatus', 'intakeChannel', 'rawDescriptionText',
+               'compensation', 'requiredQualifications', 'preferredQualifications',
+               'coreDuties', 'knownContactIds', 'stage', 'appliedConfirmedByNora',
+               'nextAction', 'nextActionDueDate', 'writtenAdvancementInfo',
+               'trainingProvidedInfo', 'commuteAndScheduleNotes', 'outstandingQuestions',
+               'authenticityFlags', 'liveVerificationLog', 'archived', 'createdAt', 'updatedAt'
+             ]) &&
+             data.keys().hasOnly([
+               'id', 'userId', 'employer', 'title', 'officialWebsite', 'postingUrl',
+               'applicationUrl', 'location', 'eligibleLocations', 'workArrangement',
+               'employmentType', 'datePosted', 'dateFirstFound', 'dateLastVerified',
+               'openingAvailabilityStatus', 'intakeChannel', 'rawDescriptionText',
+               'compensation', 'requiredQualifications', 'preferredQualifications',
+               'coreDuties', 'knownContactIds', 'stage', 'appliedConfirmedByNora',
+               'nextAction', 'nextActionDueDate', 'writtenAdvancementInfo',
+               'trainingProvidedInfo', 'commuteAndScheduleNotes', 'outstandingQuestions',
+               'authenticityFlags', 'liveVerificationLog', 'archived', 'createdAt', 'updatedAt'
+             ]) &&
+             isValidId(data.id) &&
+             data.userId == request.auth.uid &&
+             data.employer is string && data.employer.size() >= 1 && data.employer.size() <= 300 &&
+             data.title is string && data.title.size() >= 1 && data.title.size() <= 300 &&
+             data.officialWebsite is string && data.officialWebsite.size() <= 500 &&
+             data.postingUrl is string && data.postingUrl.size() <= 800 &&
+             data.applicationUrl is string && data.applicationUrl.size() <= 800 &&
+             data.location is string && data.location.size() <= 300 &&
+             data.eligibleLocations is string && data.eligibleLocations.size() <= 500 &&
+             data.workArrangement in ['remote', 'hybrid', 'onsite', 'unknown'] &&
+             data.employmentType in ['full_time', 'part_time', 'contract', 'unknown'] &&
+             data.datePosted is string && data.datePosted.size() <= 30 &&
+             data.dateFirstFound is string && data.dateFirstFound.size() <= 30 &&
+             data.dateLastVerified is string && data.dateLastVerified.size() <= 30 &&
+             data.openingAvailabilityStatus in ['Unverified', 'Seen on official careers page', 'No longer listed / Closed'] &&
+             data.intakeChannel is string && data.intakeChannel.size() <= 80 &&
+             data.rawDescriptionText is string && data.rawDescriptionText.size() <= 25000 &&
+             isValidCompensationMap(data.compensation) &&
+             isBoundedStringList(data.requiredQualifications, 30, 500) &&
+             isBoundedStringList(data.preferredQualifications, 30, 500) &&
+             isBoundedStringList(data.coreDuties, 30, 500) &&
+             isBoundedStringList(data.knownContactIds, 30, 128) &&
+             data.stage is string && data.stage.size() <= 60 &&
+             data.appliedConfirmedByNora in ['unconfirmed', 'not_applied', 'applied'] &&
+             data.nextAction is string && data.nextAction.size() <= 500 &&
+             data.nextActionDueDate is string && data.nextActionDueDate.size() <= 30 &&
+             data.writtenAdvancementInfo is string && data.writtenAdvancementInfo.size() <= 2000 &&
+             data.trainingProvidedInfo is string && data.trainingProvidedInfo.size() <= 2000 &&
+             data.commuteAndScheduleNotes is string && data.commuteAndScheduleNotes.size() <= 2000 &&
+             isBoundedStringList(data.outstandingQuestions, 25, 500) &&
+             data.authenticityFlags is list && data.authenticityFlags.size() <= 20 &&
+             (data.authenticityFlags.size() == 0 || data.authenticityFlags[0] is map) &&
+             isValidLiveVerificationMap(data.liveVerificationLog) &&
+             data.archived is bool &&
+             data.createdAt is timestamp &&
+             data.updatedAt is timestamp;
+    }
+
+    function isValidAssessment(data) {
+      return isVerifiedUser() &&
+             data.keys().hasAll([
+               'id', 'userId', 'opportunityId', 'requirementText', 'priority',
+               'noraEvidenceSummary', 'linkedEvidenceIds', 'assessment', 'gapNature',
+               'nextStep', 'createdAt', 'updatedAt'
+             ]) &&
+             data.keys().hasOnly([
+               'id', 'userId', 'opportunityId', 'requirementText', 'priority',
+               'noraEvidenceSummary', 'linkedEvidenceIds', 'assessment', 'gapNature',
+               'nextStep', 'createdAt', 'updatedAt'
+             ]) &&
+             isValidId(data.id) &&
+             data.userId == request.auth.uid &&
+             isValidId(data.opportunityId) &&
+             data.requirementText is string && data.requirementText.size() >= 1 && data.requirementText.size() <= 1000 &&
+             data.priority in ['Required', 'Preferred'] &&
+             data.noraEvidenceSummary is string && data.noraEvidenceSummary.size() <= 2000 &&
+             isBoundedStringList(data.linkedEvidenceIds, 15, 128) &&
+             data.assessment in ['Direct evidence', 'Transferable evidence', 'Gap', 'Unknown'] &&
+             data.gapNature in ['none', 'hard_eligibility', 'trainable_skill', 'missing_evidence_check'] &&
+             data.nextStep is string && data.nextStep.size() <= 1000 &&
+             data.createdAt is timestamp &&
+             data.updatedAt is timestamp;
+    }
+
+    function isValidContact(data) {
+      return isVerifiedUser() &&
+             data.keys().hasAll([
+               'id', 'userId', 'name', 'organization', 'role', 'roleVerified',
+               'relationship', 'source', 'contactChannelNote', 'lastContactDate',
+               'nextAction', 'nextActionDueDate', 'replyStatus', 'doNotContact',
+               'linkedOpportunityId', 'notes', 'createdAt', 'updatedAt'
+             ]) &&
+             data.keys().hasOnly([
+               'id', 'userId', 'name', 'organization', 'role', 'roleVerified',
+               'relationship', 'source', 'contactChannelNote', 'lastContactDate',
+               'nextAction', 'nextActionDueDate', 'replyStatus', 'doNotContact',
+               'linkedOpportunityId', 'notes', 'createdAt', 'updatedAt'
+             ]) &&
+             isValidId(data.id) &&
+             data.userId == request.auth.uid &&
+             data.name is string && data.name.size() >= 1 && data.name.size() <= 200 &&
+             data.organization is string && data.organization.size() <= 300 &&
+             data.role is string && data.role.size() <= 200 &&
+             data.roleVerified is bool &&
+             data.relationship is string && data.relationship.size() <= 300 &&
+             data.source is string && data.source.size() <= 300 &&
+             data.contactChannelNote is string && data.contactChannelNote.size() <= 500 &&
+             data.lastContactDate is string && data.lastContactDate.size() <= 30 &&
+             data.nextAction is string && data.nextAction.size() <= 500 &&
+             data.nextActionDueDate is string && data.nextActionDueDate.size() <= 30 &&
+             data.replyStatus is string && data.replyStatus.size() <= 60 &&
+             data.doNotContact is bool &&
+             isOptionalId(data.linkedOpportunityId) &&
+             data.notes is string && data.notes.size() <= 3000 &&
+             data.createdAt is timestamp &&
+             data.updatedAt is timestamp;
+    }
+
+    function isValidOutreachDraft(data) {
+      return isVerifiedUser() &&
+             data.keys().hasAll([
+               'id', 'userId', 'contactId', 'opportunityId', 'messageType',
+               'recipientSummary', 'bodyText', 'evidenceUsed', 'missingInformation',
+               'reasoning', 'suggestedNextAction', 'approvedByNora', 'approvedAt',
+               'sentState', 'manuallySentLoggedAt', 'createdAt', 'updatedAt'
+             ]) &&
+             data.keys().hasOnly([
+               'id', 'userId', 'contactId', 'opportunityId', 'messageType',
+               'recipientSummary', 'bodyText', 'evidenceUsed', 'missingInformation',
+               'reasoning', 'suggestedNextAction', 'approvedByNora', 'approvedAt',
+               'sentState', 'manuallySentLoggedAt', 'createdAt', 'updatedAt'
+             ]) &&
+             isValidId(data.id) &&
+             data.userId == request.auth.uid &&
+             isValidId(data.contactId) &&
+             isOptionalId(data.opportunityId) &&
+             data.messageType is string && data.messageType.size() <= 60 &&
+             data.recipientSummary is string && data.recipientSummary.size() <= 300 &&
+             data.bodyText is string && data.bodyText.size() >= 1 && data.bodyText.size() <= 8000 &&
+             isBoundedStringList(data.evidenceUsed, 15, 500) &&
+             isBoundedStringList(data.missingInformation, 15, 500) &&
+             data.reasoning is string && data.reasoning.size() <= 2000 &&
+             data.suggestedNextAction is string && data.suggestedNextAction.size() <= 1000 &&
+             data.approvedByNora is bool &&
+             data.approvedAt is string && data.approvedAt.size() <= 40 &&
+             data.sentState in ['draft', 'approved', 'logged_sent'] &&
+             data.manuallySentLoggedAt is string && data.manuallySentLoggedAt.size() <= 40 &&
+             data.createdAt is timestamp &&
+             data.updatedAt is timestamp;
+    }
+
+    function isValidApplicationVersion(data) {
+      return isVerifiedUser() &&
+             data.keys().hasAll([
+               'id', 'userId', 'opportunityId', 'versionLabel', 'tailoredResumeText',
+               'coverNoteText', 'whyThisRoleText', 'applicationQuestionsText',
+               'interviewTalkingPoints', 'checklistCompleted', 'submitted',
+               'submittedDate', 'submissionNotes', 'createdAt', 'updatedAt'
+             ]) &&
+             data.keys().hasOnly([
+               'id', 'userId', 'opportunityId', 'versionLabel', 'tailoredResumeText',
+               'coverNoteText', 'whyThisRoleText', 'applicationQuestionsText',
+               'interviewTalkingPoints', 'checklistCompleted', 'submitted',
+               'submittedDate', 'submissionNotes', 'createdAt', 'updatedAt'
+             ]) &&
+             isValidId(data.id) &&
+             data.userId == request.auth.uid &&
+             isValidId(data.opportunityId) &&
+             data.versionLabel is string && data.versionLabel.size() >= 1 && data.versionLabel.size() <= 200 &&
+             data.tailoredResumeText is string && data.tailoredResumeText.size() <= 30000 &&
+             data.coverNoteText is string && data.coverNoteText.size() <= 10000 &&
+             data.whyThisRoleText is string && data.whyThisRoleText.size() <= 6000 &&
+             data.applicationQuestionsText is string && data.applicationQuestionsText.size() <= 12000 &&
+             data.interviewTalkingPoints is string && data.interviewTalkingPoints.size() <= 8000 &&
+             isValidChecklistMap(data.checklistCompleted) &&
+             data.submitted is bool &&
+             data.submittedDate is string && data.submittedDate.size() <= 30 &&
+             data.submissionNotes is string && data.submissionNotes.size() <= 1000 &&
+             data.createdAt is timestamp &&
+             data.updatedAt is timestamp;
+    }
+
+    function isValidTask(data) {
+      return isVerifiedUser() &&
+             data.keys().hasAll([
+               'id', 'userId', 'title', 'whyItMatters', 'category',
+               'estimatedMinutes', 'dueDate', 'scheduledBucket', 'completed',
+               'completedAt', 'archived', 'linkedOpportunityId', 'linkedContactId',
+               'createdAt', 'updatedAt'
+             ]) &&
+             data.keys().hasOnly([
+               'id', 'userId', 'title', 'whyItMatters', 'category',
+               'estimatedMinutes', 'dueDate', 'scheduledBucket', 'completed',
+               'completedAt', 'archived', 'linkedOpportunityId', 'linkedContactId',
+               'createdAt', 'updatedAt'
+             ]) &&
+             isValidId(data.id) &&
+             data.userId == request.auth.uid &&
+             data.title is string && data.title.size() >= 1 && data.title.size() <= 400 &&
+             data.whyItMatters is string && data.whyItMatters.size() <= 1500 &&
+             data.category in ['opportunity', 'relationship', 'preparation', 'followup'] &&
+             data.estimatedMinutes is number && data.estimatedMinutes >= 1 && data.estimatedMinutes <= 600 &&
+             data.dueDate is string && data.dueDate.size() <= 30 &&
+             data.scheduledBucket in ['today', 'tomorrow', 'later'] &&
+             data.completed is bool &&
+             data.completedAt is string && data.completedAt.size() <= 40 &&
+             data.archived is bool &&
+             isOptionalId(data.linkedOpportunityId) &&
+             isOptionalId(data.linkedContactId) &&
+             data.createdAt is timestamp &&
+             data.updatedAt is timestamp;
+    }
+
+    function isValidPracticeSession(data) {
+      return isVerifiedUser() &&
+             data.keys().hasAll([
+               'id', 'userId', 'mode', 'promptQuestion', 'noraResponse',
+               'feedback', 'durationMinutes', 'linkedOpportunityId',
+               'sessionState', 'createdAt', 'updatedAt'
+             ]) &&
+             data.keys().hasOnly([
+               'id', 'userId', 'mode', 'promptQuestion', 'noraResponse',
+               'feedback', 'durationMinutes', 'linkedOpportunityId',
+               'sessionState', 'createdAt', 'updatedAt'
+             ]) &&
+             isValidId(data.id) &&
+             data.userId == request.auth.uid &&
+             data.mode is string && data.mode.size() <= 40 &&
+             data.promptQuestion is string && data.promptQuestion.size() >= 1 && data.promptQuestion.size() <= 1000 &&
+             data.noraResponse is string && data.noraResponse.size() >= 1 && data.noraResponse.size() <= 10000 &&
+             data.feedback is map && data.feedback.keys().size() <= 15 &&
+             data.durationMinutes is number && data.durationMinutes >= 1 && data.durationMinutes <= 300 &&
+             isOptionalId(data.linkedOpportunityId) &&
+             data.sessionState == 'finalized' &&
+             data.createdAt is timestamp &&
+             data.updatedAt is timestamp;
+    }
+
+    function isValidLearningItem(data) {
+      return isVerifiedUser() &&
+             data.keys().hasAll([
+               'id', 'userId', 'title', 'tiedToRequirement', 'linkedOpportunityId',
+               'progressStage', 'estimatedHours', 'practicalExercise',
+               'honestFramingNote', 'createdAt', 'updatedAt'
+             ]) &&
+             data.keys().hasOnly([
+               'id', 'userId', 'title', 'tiedToRequirement', 'linkedOpportunityId',
+               'progressStage', 'estimatedHours', 'practicalExercise',
+               'honestFramingNote', 'createdAt', 'updatedAt'
+             ]) &&
+             isValidId(data.id) &&
+             data.userId == request.auth.uid &&
+             data.title is string && data.title.size() >= 1 && data.title.size() <= 400 &&
+             data.tiedToRequirement is string && data.tiedToRequirement.size() <= 600 &&
+             isOptionalId(data.linkedOpportunityId) &&
+             data.progressStage in ['Planned', 'In progress', 'Completed'] &&
+             data.estimatedHours is number && data.estimatedHours >= 0 && data.estimatedHours <= 500 &&
+             data.practicalExercise is string && data.practicalExercise.size() <= 1500 &&
+             data.honestFramingNote is string && data.honestFramingNote.size() <= 1000 &&
+             data.createdAt is timestamp &&
+             data.updatedAt is timestamp;
+    }
+
+    function isValidTimeLog(data) {
+      return isVerifiedUser() &&
+             data.keys().hasAll([
+               'id', 'userId', 'date', 'activity', 'minutes', 'note', 'createdAt', 'updatedAt'
+             ]) &&
+             data.keys().hasOnly([
+               'id', 'userId', 'date', 'activity', 'minutes', 'note', 'createdAt', 'updatedAt'
+             ]) &&
+             isValidId(data.id) &&
+             data.userId == request.auth.uid &&
+             data.date is string && data.date.size() <= 30 &&
+             data.activity is string && data.activity.size() <= 120 &&
+             data.minutes is number && data.minutes >= 1 && data.minutes <= 720 &&
+             data.note is string && data.note.size() <= 500 &&
+             data.createdAt is timestamp &&
+             data.updatedAt is timestamp;
+    }
+
+    function isValidDocumentMeta(data) {
+      return isVerifiedUser() &&
+             data.keys().hasAll([
+               'id', 'userId', 'fileName', 'mimeType', 'byteSize', 'docCategory',
+               'linkedOpportunityId', 'storageRef', 'sha256', 'createdAt', 'updatedAt'
+             ]) &&
+             data.keys().hasOnly([
+               'id', 'userId', 'fileName', 'mimeType', 'byteSize', 'docCategory',
+               'linkedOpportunityId', 'storageRef', 'sha256', 'createdAt', 'updatedAt'
+             ]) &&
+             isValidId(data.id) &&
+             data.userId == request.auth.uid &&
+             data.fileName is string && data.fileName.size() >= 1 && data.fileName.size() <= 255 &&
+             data.mimeType is string && data.mimeType.size() >= 1 && data.mimeType.size() <= 120 &&
+             data.byteSize is number && data.byteSize >= 1 && data.byteSize <= 750000 &&
+             data.docCategory in ['resume', 'job_description', 'supporting_document'] &&
+             isOptionalId(data.linkedOpportunityId) &&
+             data.storageRef is string && data.storageRef.size() >= 1 && data.storageRef.size() <= 255 &&
+             data.sha256 is string && data.sha256.size() >= 16 && data.sha256.size() <= 128 &&
+             data.createdAt is timestamp &&
+             data.updatedAt is timestamp;
+    }
+
+    function isValidDocumentBlob(data) {
+      return isVerifiedUser() &&
+             data.keys().hasAll([
+               'id', 'userId', 'documentId', 'encoding', 'content', 'byteSize', 'createdAt', 'updatedAt'
+             ]) &&
+             data.keys().hasOnly([
+               'id', 'userId', 'documentId', 'encoding', 'content', 'byteSize', 'createdAt', 'updatedAt'
+             ]) &&
+             isValidId(data.id) &&
+             data.userId == request.auth.uid &&
+             isValidId(data.documentId) &&
+             data.id == data.documentId &&
+             data.encoding in ['utf8', 'base64'] &&
+             data.content is string && data.content.size() >= 1 && data.content.size() <= 750000 &&
+             data.byteSize is number && data.byteSize >= 1 && data.byteSize <= 750000 &&
+             data.createdAt is timestamp &&
+             data.updatedAt is timestamp;
+    }
+
+    function isValidRelationshipEdge(data) {
+      return isVerifiedUser() &&
+             data.keys().hasAll([
+               'id', 'userId', 'canonicalKey', 'sourceType', 'sourceId', 'sourceLabel',
+               'targetType', 'targetId', 'targetLabel', 'relationshipType',
+               'requirementPriority', 'evidenceIds', 'rejectedEvidenceIds',
+               'status', 'origin', 'explanationNote', 'createdAt', 'updatedAt'
+             ]) &&
+             data.keys().hasOnly([
+               'id', 'userId', 'canonicalKey', 'sourceType', 'sourceId', 'sourceLabel',
+               'targetType', 'targetId', 'targetLabel', 'relationshipType',
+               'requirementPriority', 'evidenceIds', 'rejectedEvidenceIds',
+               'status', 'origin', 'explanationNote', 'createdAt', 'updatedAt'
+             ]) &&
+             isValidId(data.id) &&
+             data.userId == request.auth.uid &&
+             data.canonicalKey is string && data.canonicalKey.size() >= 3 && data.canonicalKey.size() <= 400 &&
+             data.sourceType in [
+               'experience', 'evidence', 'skill', 'requirement',
+               'opportunity', 'learning', 'contact', 'employer'
+             ] &&
+             isValidId(data.sourceId) &&
+             data.sourceLabel is string && data.sourceLabel.size() >= 1 && data.sourceLabel.size() <= 300 &&
+             data.targetType in [
+               'experience', 'evidence', 'skill', 'requirement',
+               'opportunity', 'learning', 'contact', 'employer'
+             ] &&
+             isValidId(data.targetId) &&
+             data.targetLabel is string && data.targetLabel.size() >= 1 && data.targetLabel.size() <= 300 &&
+             data.relationshipType in [
+               'demonstrates', 'supports', 'has_requirement', 'requires', 'teaches',
+               'claims_affiliation_with', 'confirmed_affiliation_with',
+               'offered_by', 'adjacent_to'
+             ] &&
+             isAllowedRelationshipTuple(data.sourceType, data.relationshipType, data.targetType) &&
+             data.requirementPriority in ['Required', 'Preferred', 'N/A'] &&
+             isBoundedStringList(data.evidenceIds, 20, 128) &&
+             isBoundedStringList(data.rejectedEvidenceIds, 20, 128) &&
+             data.status in ['suggested', 'confirmed', 'rejected'] &&
+             data.origin in ['user', 'document_extraction', 'ai_suggestion'] &&
+             data.explanationNote is string && data.explanationNote.size() <= 1000 &&
+             !(data.relationshipType == 'claims_affiliation_with' && data.status == 'confirmed') &&
+             (!(data.relationshipType in ['demonstrates', 'supports', 'adjacent_to'] && data.status == 'confirmed') || data.evidenceIds.size() >= 1) &&
+             data.createdAt is timestamp &&
+             data.updatedAt is timestamp;
+    }
+
+    function isValidDimensionSummaryMap(dm, expectedDim) {
+      return dm is map &&
+             dm.keys().hasAll(['dimension', 'label', 'state', 'summary']) &&
+             dm.keys().hasOnly(['dimension', 'label', 'state', 'summary']) &&
+             dm.dimension == expectedDim &&
+             dm.label is string && dm.label.size() >= 1 && dm.label.size() <= 80 &&
+             dm.state in ['unchecked', 'corroborated', 'unconfirmed', 'concern_or_conflict', 'high_risk'] &&
+             dm.summary is string && dm.summary.size() <= 400;
+    }
+
+    function isValidDimensionAssessmentsMap(da) {
+      return da is map &&
+             da.keys().hasAll([
+               'employer_identity', 'opening_authenticity', 'recruiter_affiliation',
+               'sender_channel_authenticity', 'requested_action'
+             ]) &&
+             da.keys().hasOnly([
+               'employer_identity', 'opening_authenticity', 'recruiter_affiliation',
+               'sender_channel_authenticity', 'requested_action'
+             ]) &&
+             isValidDimensionSummaryMap(da.employer_identity, 'employer_identity') &&
+             isValidDimensionSummaryMap(da.opening_authenticity, 'opening_authenticity') &&
+             isValidDimensionSummaryMap(da.recruiter_affiliation, 'recruiter_affiliation') &&
+             isValidDimensionSummaryMap(da.sender_channel_authenticity, 'sender_channel_authenticity') &&
+             isValidDimensionSummaryMap(da.requested_action, 'requested_action');
+    }
+
+    function isValidImpersonationConfirmationMap(ic) {
+      return ic is map &&
+             ic.keys().hasAll([
+               'active', 'confirmedByIdentity', 'identityEstablishmentMethod',
+               'supportingArtifactId', 'confirmedAtIso'
+             ]) &&
+             ic.keys().hasOnly([
+               'active', 'confirmedByIdentity', 'identityEstablishmentMethod',
+               'supportingArtifactId', 'confirmedAtIso'
+             ]) &&
+             ic.active is bool &&
+             ic.confirmedByIdentity is string && ic.confirmedByIdentity.size() <= 240 &&
+             ic.identityEstablishmentMethod is string && ic.identityEstablishmentMethod.size() <= 500 &&
+             isOptionalId(ic.supportingArtifactId) &&
+             ic.confirmedAtIso is string && ic.confirmedAtIso.size() <= 40;
+    }
+
+    function isValidAuthenticityReview(data) {
+      return isVerifiedUser() &&
+             data.keys().hasAll([
+               'id', 'userId', 'opportunityId', 'subjectLabel', 'officialEmployerDomain',
+               'reviewScope', 'overallStatus', 'dimensionAssessments', 'impersonationConfirmation',
+               'userDecision', 'userDecisionNote', 'liveResearchStatus', 'liveResearchSummary',
+               'whatWasChecked', 'whatRemainsUnknown', 'nextVerificationSteps',
+               'artifacts', 'checks', 'findings', 'createdAt', 'updatedAt'
+             ]) &&
+             data.keys().hasOnly([
+               'id', 'userId', 'opportunityId', 'subjectLabel', 'officialEmployerDomain',
+               'reviewScope', 'overallStatus', 'dimensionAssessments', 'impersonationConfirmation',
+               'userDecision', 'userDecisionNote', 'liveResearchStatus', 'liveResearchSummary',
+               'whatWasChecked', 'whatRemainsUnknown', 'nextVerificationSteps',
+               'artifacts', 'checks', 'findings', 'createdAt', 'updatedAt'
+             ]) &&
+             isValidId(data.id) &&
+             data.userId == request.auth.uid &&
+             isOptionalId(data.opportunityId) &&
+             data.subjectLabel is string && data.subjectLabel.size() >= 1 && data.subjectLabel.size() <= 240 &&
+             data.officialEmployerDomain is string && data.officialEmployerDomain.size() <= 255 &&
+             data.reviewScope is string && data.reviewScope.size() >= 1 && data.reviewScope.size() <= 400 &&
+             data.overallStatus in [
+               'not_reviewed',
+               'partially_corroborated',
+               'unresolved_concerns',
+               'high_risk_request_detected',
+               'corroborated_within_stated_scope',
+               'documented_impersonation_confirmation'
+             ] &&
+             isValidDimensionAssessmentsMap(data.dimensionAssessments) &&
+             isValidImpersonationConfirmationMap(data.impersonationConfirmation) &&
+             (!(data.overallStatus == 'documented_impersonation_confirmation') || (
+               data.impersonationConfirmation.active == true &&
+               data.impersonationConfirmation.confirmedByIdentity.size() >= 3 &&
+               data.impersonationConfirmation.identityEstablishmentMethod.size() >= 5 &&
+               isValidId(data.impersonationConfirmation.supportingArtifactId)
+             )) &&
+             data.userDecision in [
+               'undecided',
+               'proceed_within_scope',
+               'pause_until_verified',
+               'decline_and_disengage'
+             ] &&
+             data.userDecisionNote is string && data.userDecisionNote.size() <= 2000 &&
+             data.liveResearchStatus in ['not_requested', 'available', 'unavailable'] &&
+             data.liveResearchSummary is string && data.liveResearchSummary.size() <= 2000 &&
+             isBoundedStringList(data.whatWasChecked, 15, 400) &&
+             isBoundedStringList(data.whatRemainsUnknown, 15, 400) &&
+             isBoundedStringList(data.nextVerificationSteps, 12, 400) &&
+             data.artifacts is list && data.artifacts.size() <= 25 &&
+             (data.artifacts.size() == 0 || data.artifacts[0] is map) &&
+             data.checks is list && data.checks.size() <= 20 &&
+             (data.checks.size() == 0 || data.checks[0] is map) &&
+             data.findings is list && data.findings.size() <= 40 &&
+             (data.findings.size() == 0 || data.findings[0] is map) &&
+             data.createdAt is timestamp &&
+             data.updatedAt is timestamp;
+    }
+
+    // 4. Collection Match Blocks
+
+    // Application Administrator Role Registry (Grants invitation management ONLY; zero /users/* access)
+    match /admins/{adminUid} {
+      allow get: if isValidId(adminUid) && (isOwner(adminUid) || isAdmin());
+      allow list: if isBootstrappedAdmin() && existing().uid is string;
+      allow create: if isAdmin() &&
+                       isValidId(adminUid) &&
+                       incoming().id == adminUid &&
+                       isValidAdminRecord(incoming()) &&
+                       incoming().grantedByUid == request.auth.uid &&
+                       incoming().createdAt == request.time &&
+                       incoming().updatedAt == request.time;
+      allow update: if isValidAdminRecord(incoming()) &&
+                       isAdmin() &&
+                       isValidId(adminUid) &&
+                       incoming().id == existing().id &&
+                       incoming().uid == existing().uid &&
+                       incoming().createdAt == existing().createdAt &&
+                       incoming().updatedAt == request.time &&
+                       (
+                         incoming().diff(existing()).affectedKeys().hasOnly([
+                           'emailNormalized', 'displayName', 'updatedAt'
+                         ])
+                       );
+      allow delete: if isAdmin() && isValidId(adminUid);
+    }
+
+    // Administrator-Managed Job-Seeker Invitations
+    match /invitations/{invitationId} {
+      allow get: if isValidId(invitationId) && (
+                   isAdmin() ||
+                   (
+                     isVerifiedUser() &&
+                     request.auth.token.email is string &&
+                     request.auth.token.email.lower() == existing().recipientEmailNormalized
+                   )
+                 );
+      allow list: if (
+                    isBootstrappedAdmin() ||
+                    (isVerifiedUser() && existing().inviterUid == request.auth.uid)
+                  ) && existing().visibilityScope == 'admin';
+      allow create: if isAdmin() &&
+                       isValidId(invitationId) &&
+                       incoming().id == invitationId &&
+                       incoming().inviterUid == request.auth.uid &&
+                       isValidInvitation(incoming()) &&
+                       incoming().createdAt == request.time &&
+                       incoming().updatedAt == request.time;
+      allow update: if isValidInvitation(incoming()) &&
+                       isValidId(invitationId) &&
+                       incoming().id == existing().id &&
+                       incoming().inviterUid == existing().inviterUid &&
+                       incoming().recipientEmail == existing().recipientEmail &&
+                       incoming().recipientEmailNormalized == existing().recipientEmailNormalized &&
+                       incoming().createdAt == existing().createdAt &&
+                       incoming().updatedAt == request.time &&
+                       (
+                         // Action 1: Administrator lifecycle update (delivery status, resend token rotation, manual link, revoke)
+                         (
+                           isAdmin() &&
+                           existing().status != 'accepted' &&
+                           incoming().diff(existing()).affectedKeys().hasOnly([
+                             'currentTokenHash', 'status', 'deliveryChannel',
+                             'deliveryProviderResult', 'manualLinkGenerated',
+                             'sendAttemptCount', 'expiresAtIso', 'expiresAtEpochMs',
+                             'revokedAtIso', 'updatedAt'
+                           ])
+                         ) ||
+                         // Action 2: Verified intended recipient redeeming non-expired, unrevoked invitation
+                         (
+                           isVerifiedUser() &&
+                           request.auth.token.email is string &&
+                           request.auth.token.email.lower() == existing().recipientEmailNormalized &&
+                           existing().status in ['pending_delivery', 'sent', 'delivery_failed'] &&
+                           request.time.toMillis() <= existing().expiresAtEpochMs &&
+                           incoming().status == 'accepted' &&
+                           incoming().acceptedByUid == request.auth.uid &&
+                           incoming().currentTokenHash == existing().currentTokenHash &&
+                           incoming().diff(existing()).affectedKeys().hasOnly([
+                             'status', 'acceptedAtIso', 'acceptedByUid', 'updatedAt'
+                           ])
+                         )
+                       );
+      allow delete: if false;
+    }
+
+    // Non-Listable SHA-256 Capability Token Lookup (Zero Unmasked PII)
+    match /invitationTokens/{tokenHash} {
+      allow get: if isValidTokenHash(tokenHash);
+      allow list: if false;
+      allow create: if isAdmin() &&
+                       isValidTokenHash(tokenHash) &&
+                       incoming().tokenHash == tokenHash &&
+                       incoming().tokenStatus == 'active' &&
+                       isValidInvitationToken(incoming()) &&
+                       incoming().createdAt == request.time &&
+                       incoming().updatedAt == request.time &&
+                       (
+                         exists(/databases/$(database)/documents/invitations/$(incoming().invitationId)) ||
+                         existsAfter(/databases/$(database)/documents/invitations/$(incoming().invitationId))
+                       );
+      allow update: if isValidInvitationToken(incoming()) &&
+                       isValidTokenHash(tokenHash) &&
+                       existing().tokenStatus == 'active' &&
+                       incoming().tokenHash == existing().tokenHash &&
+                       incoming().invitationId == existing().invitationId &&
+                       incoming().saltedEmailHash == existing().saltedEmailHash &&
+                       incoming().createdAt == existing().createdAt &&
+                       incoming().updatedAt == request.time &&
+                       (
+                         // Action 1: Admin supersede (on resend) or revoke
+                         (
+                           isAdmin() &&
+                           incoming().tokenStatus in ['superseded', 'revoked'] &&
+                           incoming().diff(existing()).affectedKeys().hasOnly([
+                             'tokenStatus', 'inviterDisplayName', 'maskedRecipientEmail', 'updatedAt'
+                           ])
+                         ) ||
+                         // Action 2: Verified recipient single-use redemption prior to expiration
+                         (
+                           isVerifiedUser() &&
+                           request.time.toMillis() <= existing().expiresAtEpochMs &&
+                           incoming().tokenStatus == 'accepted' &&
+                           incoming().diff(existing()).affectedKeys().hasOnly([
+                             'tokenStatus', 'inviterDisplayName', 'maskedRecipientEmail', 'updatedAt'
+                           ]) &&
+                           request.auth.token.email is string &&
+                           get(/databases/$(database)/documents/invitations/$(existing().invitationId)).data.recipientEmailNormalized == request.auth.token.email.lower()
+                         )
+                       );
+      allow delete: if false;
+    }
+
+    // Append-Only Security Audit Logs (Readable only by Admin; Immutable)
+    match /auditLogs/{logId} {
+      allow get: if isAdmin() && isValidId(logId);
+      allow list: if (
+                    isBootstrappedAdmin() ||
+                    (isVerifiedUser() && existing().actorUid == request.auth.uid)
+                  ) && existing().visibilityScope == 'admin';
+      allow create: if isVerifiedUser() &&
+                       isValidId(logId) &&
+                       incoming().id == logId &&
+                       isValidAuditLog(incoming()) &&
+                       incoming().createdAt == request.time;
+      allow update: if false;
+      allow delete: if false;
+    }
+
+    // Owner-Isolated Private Career Workspaces (STRICT: No isAdmin() access allowed!)
+    match /users/{userId} {
+      allow get: if isOwner(userId) && isValidId(userId);
+      allow list: if false;
+      allow create: if isOwner(userId) &&
+                       isValidId(userId) &&
+                       isValidUserProfile(incoming()) &&
+                       incoming().createdAt == request.time &&
+                       incoming().updatedAt == request.time;
+      allow update: if isValidUserProfile(incoming()) &&
+                       isOwner(userId) &&
+                       isValidId(userId) &&
+                       incoming().id == existing().id &&
+                       incoming().userId == existing().userId &&
+                       incoming().createdAt == existing().createdAt &&
+                       incoming().updatedAt == request.time &&
+                       (
+                         incoming().diff(existing()).affectedKeys().hasOnly([
+                           'fullName', 'location', 'educationSummary',
+                           'rbtCertificationStatus', 'rbtCertificationNote',
+                           'littleLeavesSoftwareUsed', 'otherExperienceNotes',
+                           'masterResumeText', 'masterResumeUpdatedAt',
+                           'profileVerifiedByNora', 'constraints', 'settings',
+                           'crmSimulation', 'starterSeeded', 'onboardingWizard',
+                           'sharingSettings', 'inviterSuggestions', 'updatedAt'
+                         ])
+                       );
+      allow delete: if isOwner(userId) && isValidId(userId);
+
+      // Subcollection: Evidence
+      match /evidence/{evidenceId} {
+        allow get: if isOwner(userId) && isValidId(userId) && isValidId(evidenceId) && isActiveWorkspaceMember(userId);
+        allow list: if isOwner(userId) && existing().userId == request.auth.uid;
+        allow create: if isOwner(userId) &&
+                         isValidId(userId) &&
+                         isValidId(evidenceId) &&
+                         incoming().id == evidenceId &&
+                         isValidEvidence(incoming()) &&
+                         incoming().createdAt == request.time &&
+                         incoming().updatedAt == request.time &&
+                         isActiveWorkspaceMember(userId);
+        allow update: if isValidEvidence(incoming()) &&
+                         isOwner(userId) &&
+                         isValidId(userId) &&
+                         isValidId(evidenceId) &&
+                         incoming().id == existing().id &&
+                         incoming().userId == existing().userId &&
+                         incoming().createdAt == existing().createdAt &&
+                         incoming().updatedAt == request.time &&
+                         (
+                           incoming().diff(existing()).affectedKeys().hasOnly([
+                             'claimText', 'category', 'sourceDocumentOrConfirmation',
+                             'sourceExcerpt', 'verificationStatus', 'dateAdded',
+                             'mayUseInApplications', 'tags', 'sourceDocumentId', 'updatedAt'
+                           ])
+                         ) &&
+                         isActiveWorkspaceMember(userId);
+        allow delete: if isOwner(userId) && isValidId(userId) && isValidId(evidenceId) && isActiveWorkspaceMember(userId);
+      }
+
+      // Subcollection: Opportunities
+      match /opportunities/{opportunityId} {
+        allow get: if isOwner(userId) && isValidId(userId) && isValidId(opportunityId) && isActiveWorkspaceMember(userId);
+        allow list: if isOwner(userId) && existing().userId == request.auth.uid;
+        allow create: if isOwner(userId) &&
+                         isValidId(userId) &&
+                         isValidId(opportunityId) &&
+                         incoming().id == opportunityId &&
+                         isValidOpportunity(incoming()) &&
+                         incoming().createdAt == request.time &&
+                         incoming().updatedAt == request.time &&
+                         isActiveWorkspaceMember(userId);
+        allow update: if isValidOpportunity(incoming()) &&
+                         isOwner(userId) &&
+                         isValidId(userId) &&
+                         isValidId(opportunityId) &&
+                         incoming().id == existing().id &&
+                         incoming().userId == existing().userId &&
+                         incoming().createdAt == existing().createdAt &&
+                         incoming().updatedAt == request.time &&
+                         (
+                           incoming().diff(existing()).affectedKeys().hasOnly([
+                             'employer', 'title', 'officialWebsite', 'postingUrl',
+                             'applicationUrl', 'location', 'eligibleLocations',
+                             'workArrangement', 'employmentType', 'datePosted',
+                             'dateFirstFound', 'dateLastVerified', 'openingAvailabilityStatus',
+                             'intakeChannel', 'rawDescriptionText', 'compensation',
+                             'requiredQualifications', 'preferredQualifications',
+                             'coreDuties', 'knownContactIds', 'stage',
+                             'appliedConfirmedByNora', 'nextAction', 'nextActionDueDate',
+                             'writtenAdvancementInfo', 'trainingProvidedInfo',
+                             'commuteAndScheduleNotes', 'outstandingQuestions',
+                             'authenticityFlags', 'liveVerificationLog', 'archived', 'updatedAt'
+                           ])
+                         ) &&
+                         isActiveWorkspaceMember(userId);
+        allow delete: if isOwner(userId) && isValidId(userId) && isValidId(opportunityId) && isActiveWorkspaceMember(userId);
+      }
+
+      // Subcollection: Requirement Assessments
+      match /assessments/{assessmentId} {
+        allow get: if isOwner(userId) && isValidId(userId) && isValidId(assessmentId) && isActiveWorkspaceMember(userId);
+        allow list: if isOwner(userId) && existing().userId == request.auth.uid;
+        allow create: if isOwner(userId) &&
+                         isValidId(userId) &&
+                         isValidId(assessmentId) &&
+                         incoming().id == assessmentId &&
+                         isValidAssessment(incoming()) &&
+                         incoming().createdAt == request.time &&
+                         incoming().updatedAt == request.time &&
+                         isActiveWorkspaceMember(userId) &&
+                         hasParentOpportunity(userId, incoming().opportunityId);
+        allow update: if isValidAssessment(incoming()) &&
+                         isOwner(userId) &&
+                         isValidId(userId) &&
+                         isValidId(assessmentId) &&
+                         incoming().id == existing().id &&
+                         incoming().userId == existing().userId &&
+                         incoming().opportunityId == existing().opportunityId &&
+                         incoming().createdAt == existing().createdAt &&
+                         incoming().updatedAt == request.time &&
+                         (
+                           incoming().diff(existing()).affectedKeys().hasOnly([
+                             'requirementText', 'priority', 'noraEvidenceSummary',
+                             'linkedEvidenceIds', 'assessment', 'gapNature',
+                             'nextStep', 'updatedAt'
+                           ])
+                         ) &&
+                         isActiveWorkspaceMember(userId);
+        allow delete: if isOwner(userId) && isValidId(userId) && isValidId(assessmentId) && isActiveWorkspaceMember(userId);
+      }
+
+      // Subcollection: Contacts
+      match /contacts/{contactId} {
+        allow get: if isOwner(userId) && isValidId(userId) && isValidId(contactId) && isActiveWorkspaceMember(userId);
+        allow list: if isOwner(userId) && existing().userId == request.auth.uid;
+        allow create: if isOwner(userId) &&
+                         isValidId(userId) &&
+                         isValidId(contactId) &&
+                         incoming().id == contactId &&
+                         isValidContact(incoming()) &&
+                         incoming().createdAt == request.time &&
+                         incoming().updatedAt == request.time &&
+                         isActiveWorkspaceMember(userId);
+        allow update: if isValidContact(incoming()) &&
+                         isOwner(userId) &&
+                         isValidId(userId) &&
+                         isValidId(contactId) &&
+                         incoming().id == existing().id &&
+                         incoming().userId == existing().userId &&
+                         incoming().createdAt == existing().createdAt &&
+                         incoming().updatedAt == request.time &&
+                         (
+                           incoming().diff(existing()).affectedKeys().hasOnly([
+                             'name', 'organization', 'role', 'roleVerified',
+                             'relationship', 'source', 'contactChannelNote',
+                             'lastContactDate', 'nextAction', 'nextActionDueDate',
+                             'replyStatus', 'doNotContact', 'linkedOpportunityId',
+                             'notes', 'updatedAt'
+                           ])
+                         ) &&
+                         isActiveWorkspaceMember(userId);
+        allow delete: if isOwner(userId) && isValidId(userId) && isValidId(contactId) && isActiveWorkspaceMember(userId);
+      }
+
+      // Subcollection: Outreach Drafts (Terminal lock when sentState == 'logged_sent')
+      match /outreachDrafts/{draftId} {
+        allow get: if isOwner(userId) && isValidId(userId) && isValidId(draftId) && isActiveWorkspaceMember(userId);
+        allow list: if isOwner(userId) && existing().userId == request.auth.uid;
+        allow create: if isOwner(userId) &&
+                         isValidId(userId) &&
+                         isValidId(draftId) &&
+                         incoming().id == draftId &&
+                         isValidOutreachDraft(incoming()) &&
+                         incoming().createdAt == request.time &&
+                         incoming().updatedAt == request.time &&
+                         isActiveWorkspaceMember(userId) &&
+                         hasParentContact(userId, incoming().contactId);
+        allow update: if isValidOutreachDraft(incoming()) &&
+                         isOwner(userId) &&
+                         isValidId(userId) &&
+                         isValidId(draftId) &&
+                         existing().sentState != 'logged_sent' &&
+                         incoming().id == existing().id &&
+                         incoming().userId == existing().userId &&
+                         incoming().contactId == existing().contactId &&
+                         incoming().createdAt == existing().createdAt &&
+                         incoming().updatedAt == request.time &&
+                         (
+                           incoming().diff(existing()).affectedKeys().hasOnly([
+                             'opportunityId', 'messageType', 'recipientSummary',
+                             'bodyText', 'evidenceUsed', 'missingInformation',
+                             'reasoning', 'suggestedNextAction', 'approvedByNora',
+                             'approvedAt', 'sentState', 'manuallySentLoggedAt', 'updatedAt'
+                           ])
+                         ) &&
+                         isActiveWorkspaceMember(userId);
+        allow delete: if isOwner(userId) && isValidId(userId) && isValidId(draftId) && isActiveWorkspaceMember(userId);
+      }
+
+      // Subcollection: Application Versions (Terminal lock when submitted == true)
+      match /applicationVersions/{versionId} {
+        allow get: if isOwner(userId) && isValidId(userId) && isValidId(versionId) && isActiveWorkspaceMember(userId);
+        allow list: if isOwner(userId) && existing().userId == request.auth.uid;
+        allow create: if isOwner(userId) &&
+                         isValidId(userId) &&
+                         isValidId(versionId) &&
+                         incoming().id == versionId &&
+                         isValidApplicationVersion(incoming()) &&
+                         incoming().createdAt == request.time &&
+                         incoming().updatedAt == request.time &&
+                         isActiveWorkspaceMember(userId) &&
+                         hasParentOpportunity(userId, incoming().opportunityId);
+        allow update: if isValidApplicationVersion(incoming()) &&
+                         isOwner(userId) &&
+                         isValidId(userId) &&
+                         isValidId(versionId) &&
+                         existing().submitted == false &&
+                         incoming().id == existing().id &&
+                         incoming().userId == existing().userId &&
+                         incoming().opportunityId == existing().opportunityId &&
+                         incoming().createdAt == existing().createdAt &&
+                         incoming().updatedAt == request.time &&
+                         (
+                           incoming().diff(existing()).affectedKeys().hasOnly([
+                             'versionLabel', 'tailoredResumeText', 'coverNoteText',
+                             'whyThisRoleText', 'applicationQuestionsText',
+                             'interviewTalkingPoints', 'checklistCompleted',
+                             'submitted', 'submittedDate', 'submissionNotes', 'updatedAt'
+                           ])
+                         ) &&
+                         isActiveWorkspaceMember(userId);
+        allow delete: if isOwner(userId) && isValidId(userId) && isValidId(versionId) && isActiveWorkspaceMember(userId);
+      }
+
+      // Subcollection: Tasks
+      match /tasks/{taskId} {
+        allow get: if isOwner(userId) && isValidId(userId) && isValidId(taskId) && isActiveWorkspaceMember(userId);
+        allow list: if isOwner(userId) && existing().userId == request.auth.uid;
+        allow create: if isOwner(userId) &&
+                         isValidId(userId) &&
+                         isValidId(taskId) &&
+                         incoming().id == taskId &&
+                         isValidTask(incoming()) &&
+                         incoming().createdAt == request.time &&
+                         incoming().updatedAt == request.time &&
+                         isActiveWorkspaceMember(userId);
+        allow update: if isValidTask(incoming()) &&
+                         isOwner(userId) &&
+                         isValidId(userId) &&
+                         isValidId(taskId) &&
+                         incoming().id == existing().id &&
+                         incoming().userId == existing().userId &&
+                         incoming().createdAt == existing().createdAt &&
+                         incoming().updatedAt == request.time &&
+                         (
+                           incoming().diff(existing()).affectedKeys().hasOnly([
+                             'title', 'whyItMatters', 'category', 'estimatedMinutes',
+                             'dueDate', 'scheduledBucket', 'completed', 'completedAt',
+                             'archived', 'linkedOpportunityId', 'linkedContactId', 'updatedAt'
+                           ])
+                         ) &&
+                         isActiveWorkspaceMember(userId);
+        allow delete: if isOwner(userId) && isValidId(userId) && isValidId(taskId) && isActiveWorkspaceMember(userId);
+      }
+
+      // Subcollection: Practice Sessions (Immutable finalized logs)
+      match /practiceSessions/{sessionId} {
+        allow get: if isOwner(userId) && isValidId(userId) && isValidId(sessionId) && isActiveWorkspaceMember(userId);
+        allow list: if isOwner(userId) && existing().userId == request.auth.uid;
+        allow create: if isOwner(userId) &&
+                         isValidId(userId) &&
+                         isValidId(sessionId) &&
+                         incoming().id == sessionId &&
+                         isValidPracticeSession(incoming()) &&
+                         incoming().createdAt == request.time &&
+                         incoming().updatedAt == request.time &&
+                         isActiveWorkspaceMember(userId);
+        allow update: if false;
+        allow delete: if isOwner(userId) && isValidId(userId) && isValidId(sessionId) && isActiveWorkspaceMember(userId);
+      }
+
+      // Subcollection: Learning Items
+      match /learningItems/{itemId} {
+        allow get: if isOwner(userId) && isValidId(userId) && isValidId(itemId) && isActiveWorkspaceMember(userId);
+        allow list: if isOwner(userId) && existing().userId == request.auth.uid;
+        allow create: if isOwner(userId) &&
+                         isValidId(userId) &&
+                         isValidId(itemId) &&
+                         incoming().id == itemId &&
+                         isValidLearningItem(incoming()) &&
+                         incoming().createdAt == request.time &&
+                         incoming().updatedAt == request.time &&
+                         isActiveWorkspaceMember(userId);
+        allow update: if isValidLearningItem(incoming()) &&
+                         isOwner(userId) &&
+                         isValidId(userId) &&
+                         isValidId(itemId) &&
+                         incoming().id == existing().id &&
+                         incoming().userId == existing().userId &&
+                         incoming().createdAt == existing().createdAt &&
+                         incoming().updatedAt == request.time &&
+                         (
+                           incoming().diff(existing()).affectedKeys().hasOnly([
+                             'title', 'tiedToRequirement', 'linkedOpportunityId',
+                             'progressStage', 'estimatedHours', 'practicalExercise',
+                             'honestFramingNote', 'updatedAt'
+                           ])
+                         ) &&
+                         isActiveWorkspaceMember(userId);
+        allow delete: if isOwner(userId) && isValidId(userId) && isValidId(itemId) && isActiveWorkspaceMember(userId);
+      }
+
+      // Subcollection: Time Logs
+      match /timeLogs/{logId} {
+        allow get: if isOwner(userId) && isValidId(userId) && isValidId(logId) && isActiveWorkspaceMember(userId);
+        allow list: if isOwner(userId) && existing().userId == request.auth.uid;
+        allow create: if isOwner(userId) &&
+                         isValidId(userId) &&
+                         isValidId(logId) &&
+                         incoming().id == logId &&
+                         isValidTimeLog(incoming()) &&
+                         incoming().createdAt == request.time &&
+                         incoming().updatedAt == request.time &&
+                         isActiveWorkspaceMember(userId);
+        allow update: if false;
+        allow delete: if isOwner(userId) && isValidId(userId) && isValidId(logId) && isActiveWorkspaceMember(userId);
+      }
+
+      // Subcollection: Private Document Metadata
+      match /documents/{documentId} {
+        allow get: if isOwner(userId) && isValidId(userId) && isValidId(documentId) && isActiveWorkspaceMember(userId);
+        allow list: if isOwner(userId) && existing().userId == request.auth.uid;
+        allow create: if isOwner(userId) &&
+                         isValidId(userId) &&
+                         isValidId(documentId) &&
+                         incoming().id == documentId &&
+                         isValidDocumentMeta(incoming()) &&
+                         incoming().createdAt == request.time &&
+                         incoming().updatedAt == request.time &&
+                         isActiveWorkspaceMember(userId);
+        allow update: if false;
+        allow delete: if isOwner(userId) && isValidId(userId) && isValidId(documentId) && isActiveWorkspaceMember(userId);
+      }
+
+      // Subcollection: Private Document Blobs (Strictly non-listable, owner-get/create/delete only)
+      match /documentBlobs/{documentId} {
+        allow get: if isOwner(userId) && isValidId(userId) && isValidId(documentId) && isActiveWorkspaceMember(userId);
+        allow list: if false;
+        allow create: if isOwner(userId) &&
+                         isValidId(userId) &&
+                         isValidId(documentId) &&
+                         incoming().id == documentId &&
+                         isValidDocumentBlob(incoming()) &&
+                         incoming().createdAt == request.time &&
+                         incoming().updatedAt == request.time &&
+                         isActiveWorkspaceMember(userId) &&
+                         hasParentDocumentMeta(userId, incoming().documentId);
+        allow update: if false;
+        allow delete: if isOwner(userId) && isValidId(userId) && isValidId(documentId) && isActiveWorkspaceMember(userId);
+      }
+
+      // Subcollection: Evidence Relationship Graph Edges (Owner-isolated; strict tuple & rejection stickiness)
+      match /relationships/{relationshipId} {
+        allow get: if isOwner(userId) && isValidId(userId) && isValidId(relationshipId) && isActiveWorkspaceMember(userId);
+        allow list: if isOwner(userId) && existing().userId == request.auth.uid;
+        allow create: if isOwner(userId) &&
+                         isValidId(userId) &&
+                         isValidId(relationshipId) &&
+                         incoming().id == relationshipId &&
+                         isValidRelationshipEdge(incoming()) &&
+                         incoming().createdAt == request.time &&
+                         incoming().updatedAt == request.time &&
+                         isActiveWorkspaceMember(userId) &&
+                         hasAccessiblePrimaryEvidence(userId, incoming().evidenceIds);
+        allow update: if isValidRelationshipEdge(incoming()) &&
+                         isOwner(userId) &&
+                         isValidId(userId) &&
+                         isValidId(relationshipId) &&
+                         incoming().id == existing().id &&
+                         incoming().userId == existing().userId &&
+                         incoming().canonicalKey == existing().canonicalKey &&
+                         incoming().sourceType == existing().sourceType &&
+                         incoming().sourceId == existing().sourceId &&
+                         incoming().targetType == existing().targetType &&
+                         incoming().targetId == existing().targetId &&
+                         incoming().relationshipType == existing().relationshipType &&
+                         incoming().createdAt == existing().createdAt &&
+                         incoming().updatedAt == request.time &&
+                         (
+                           // Action 1: Confirm, reject, or refine metadata on an active/suggested relationship
+                           (
+                             existing().status != 'rejected' &&
+                             incoming().diff(existing()).affectedKeys().hasOnly([
+                               'sourceLabel', 'targetLabel', 'requirementPriority',
+                               'evidenceIds', 'rejectedEvidenceIds', 'status',
+                               'origin', 'explanationNote', 'updatedAt'
+                             ])
+                           ) ||
+                           // Action 2: Keep rejected OR reconsider ONLY when new supporting evidence is introduced
+                           (
+                             existing().status == 'rejected' &&
+                             (
+                               incoming().status == 'rejected' ||
+                               (
+                                 incoming().evidenceIds.size() >= 1 &&
+                                 incoming().evidenceIds != existing().rejectedEvidenceIds
+                               )
+                             ) &&
+                             incoming().diff(existing()).affectedKeys().hasOnly([
+                               'sourceLabel', 'targetLabel', 'requirementPriority',
+                               'evidenceIds', 'rejectedEvidenceIds', 'status',
+                               'origin', 'explanationNote', 'updatedAt'
+                             ])
+                           )
+                         ) &&
+                         isActiveWorkspaceMember(userId) &&
+                         hasAccessiblePrimaryEvidence(userId, incoming().evidenceIds);
+        allow delete: if isOwner(userId) && isValidId(userId) && isValidId(relationshipId) && isActiveWorkspaceMember(userId);
+      }
+
+      // Subcollection: Authenticity & Safety Reviews (Owner-isolated; 5-dimension & impersonation-proof gated)
+      match /authenticityReviews/{reviewId} {
+        allow get: if isOwner(userId) && isValidId(userId) && isValidId(reviewId) && isActiveWorkspaceMember(userId);
+        allow list: if isOwner(userId) && existing().userId == request.auth.uid;
+        allow create: if isOwner(userId) &&
+                         isValidId(userId) &&
+                         isValidId(reviewId) &&
+                         incoming().id == reviewId &&
+                         isValidAuthenticityReview(incoming()) &&
+                         incoming().createdAt == request.time &&
+                         incoming().updatedAt == request.time &&
+                         isActiveWorkspaceMember(userId) &&
+                         (incoming().opportunityId == '' || hasParentOpportunity(userId, incoming().opportunityId));
+        allow update: if isValidAuthenticityReview(incoming()) &&
+                         isOwner(userId) &&
+                         isValidId(userId) &&
+                         isValidId(reviewId) &&
+                         incoming().id == existing().id &&
+                         incoming().userId == existing().userId &&
+                         incoming().createdAt == existing().createdAt &&
+                         incoming().updatedAt == request.time &&
+                         (
+                           incoming().diff(existing()).affectedKeys().hasOnly([
+                             'opportunityId', 'subjectLabel', 'officialEmployerDomain',
+                             'reviewScope', 'overallStatus', 'dimensionAssessments',
+                             'impersonationConfirmation', 'userDecision', 'userDecisionNote',
+                             'liveResearchStatus', 'liveResearchSummary', 'whatWasChecked',
+                             'whatRemainsUnknown', 'nextVerificationSteps', 'artifacts',
+                             'checks', 'findings', 'updatedAt'
+                           ])
+                         ) &&
+                         isActiveWorkspaceMember(userId) &&
+                         (incoming().opportunityId == '' || hasParentOpportunity(userId, incoming().opportunityId));
+        allow delete: if isOwner(userId) && isValidId(userId) && isValidId(reviewId) && isActiveWorkspaceMember(userId);
+      }
+    }
+  }
+}

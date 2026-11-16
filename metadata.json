@@ -1,0 +1,8 @@
+{
+  "name": "CraftsCareer Launch",
+  "description": "An evidence-based personal job-search workspace helping Crafts evaluate opportunities, verify employer authenticity, prepare truthful applications, track outreach, and build career-ready skills.",
+  "requestFramePermissions": [],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}

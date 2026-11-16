@@ -1,0 +1,956 @@
+{
+  "entities": {
+    "UserProfile": {
+      "title": "UserProfile",
+      "description": "Authenticated workspace owner's private profile, career constraints, onboarding wizard progress, sharing settings, and master resume summary.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "userId": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "fullName": { "type": "string", "maxLength": 200 },
+        "location": { "type": "string", "maxLength": 200 },
+        "educationSummary": { "type": "string", "maxLength": 1000 },
+        "rbtCertificationStatus": {
+          "type": "string",
+          "enum": ["unverified", "active", "inactive_or_expired"],
+          "maxLength": 40
+        },
+        "rbtCertificationNote": { "type": "string", "maxLength": 1000 },
+        "littleLeavesSoftwareUsed": { "type": "string", "maxLength": 300 },
+        "otherExperienceNotes": { "type": "string", "maxLength": 2000 },
+        "masterResumeText": { "type": "string", "maxLength": 30000 },
+        "masterResumeUpdatedAt": { "type": "string", "maxLength": 40 },
+        "profileVerifiedByNora": { "type": "boolean" },
+        "constraints": { "type": "object", "description": "Career and compensation preferences map." },
+        "settings": { "type": "object", "description": "Workspace preferences map." },
+        "crmSimulation": { "type": "object", "description": "Synthetic CRM practice progress map." },
+        "starterSeeded": { "type": "boolean" },
+        "onboardingWizard": { "type": "object", "description": "Resumable 6-step first-login setup wizard state." },
+        "sharingSettings": { "type": "object", "description": "Owner-controlled privacy and reviewer sharing settings (default: private)." },
+        "inviterSuggestions": { "type": "array", "description": "Bounded unverified profile suggestions supplied by inviter (<= 10)." },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": [
+        "id",
+        "userId",
+        "fullName",
+        "location",
+        "educationSummary",
+        "rbtCertificationStatus",
+        "rbtCertificationNote",
+        "littleLeavesSoftwareUsed",
+        "otherExperienceNotes",
+        "masterResumeText",
+        "masterResumeUpdatedAt",
+        "profileVerifiedByNora",
+        "constraints",
+        "settings",
+        "crmSimulation",
+        "starterSeeded",
+        "createdAt",
+        "updatedAt"
+      ]
+    },
+    "AdminRecord": {
+      "title": "AdminRecord",
+      "description": "Application-level administrator grant (grants invitation management only; never grants read/write access to private user workspaces).",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "uid": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "emailNormalized": { "type": "string", "minLength": 3, "maxLength": 254 },
+        "displayName": { "type": "string", "maxLength": 120 },
+        "grantedByUid": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "uid", "emailNormalized", "displayName", "grantedByUid", "createdAt", "updatedAt"]
+    },
+    "InvitationRecord": {
+      "title": "InvitationRecord",
+      "description": "Administrator-managed job-seeker workspace invitation storing SHA-256 token hash and email binding.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "visibilityScope": { "type": "string", "enum": ["admin"], "maxLength": 16 },
+        "invitationType": { "type": "string", "enum": ["job_seeker"], "maxLength": 24 },
+        "recipientDisplayName": { "type": "string", "minLength": 1, "maxLength": 120 },
+        "recipientEmail": { "type": "string", "minLength": 3, "maxLength": 254 },
+        "recipientEmailNormalized": { "type": "string", "minLength": 3, "maxLength": 254 },
+        "maskedRecipientEmail": { "type": "string", "minLength": 3, "maxLength": 254 },
+        "personalMessage": { "type": "string", "maxLength": 500 },
+        "inviterUid": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "inviterDisplayName": { "type": "string", "minLength": 1, "maxLength": 120 },
+        "currentTokenHash": { "type": "string", "minLength": 64, "maxLength": 64, "pattern": "^[a-f0-9]{64}$" },
+        "status": {
+          "type": "string",
+          "enum": ["pending_delivery", "sent", "delivery_failed", "expired", "revoked", "accepted"],
+          "maxLength": 24
+        },
+        "deliveryChannel": {
+          "type": "string",
+          "enum": ["email_provider", "unconfigured", "manual_link"],
+          "maxLength": 24
+        },
+        "deliveryProviderResult": { "type": "string", "maxLength": 500 },
+        "manualLinkGenerated": { "type": "boolean" },
+        "sendAttemptCount": { "type": "number" },
+        "suggestedItems": { "type": "array", "description": "Bounded unverified inviter-supplied starting notes (<= 10, never sent in email)." },
+        "createdAtIso": { "type": "string", "maxLength": 40 },
+        "expiresAtIso": { "type": "string", "maxLength": 40 },
+        "expiresAtEpochMs": { "type": "number" },
+        "acceptedAtIso": { "type": "string", "maxLength": 40 },
+        "acceptedByUid": { "type": "string", "maxLength": 128 },
+        "revokedAtIso": { "type": "string", "maxLength": 40 },
+        "idempotencyKey": { "type": "string", "maxLength": 128 },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": [
+        "id",
+        "visibilityScope",
+        "invitationType",
+        "recipientDisplayName",
+        "recipientEmail",
+        "recipientEmailNormalized",
+        "maskedRecipientEmail",
+        "personalMessage",
+        "inviterUid",
+        "inviterDisplayName",
+        "currentTokenHash",
+        "status",
+        "deliveryChannel",
+        "deliveryProviderResult",
+        "manualLinkGenerated",
+        "sendAttemptCount",
+        "suggestedItems",
+        "createdAtIso",
+        "expiresAtIso",
+        "expiresAtEpochMs",
+        "acceptedAtIso",
+        "acceptedByUid",
+        "revokedAtIso",
+        "idempotencyKey",
+        "createdAt",
+        "updatedAt"
+      ]
+    },
+    "InvitationTokenLookup": {
+      "title": "InvitationTokenLookup",
+      "description": "Non-listable SHA-256 token capability lookup storing masked metadata only (zero unmasked PII).",
+      "type": "object",
+      "properties": {
+        "tokenHash": { "type": "string", "minLength": 64, "maxLength": 64, "pattern": "^[a-f0-9]{64}$" },
+        "invitationId": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "invitationType": { "type": "string", "enum": ["job_seeker"], "maxLength": 24 },
+        "inviterDisplayName": { "type": "string", "maxLength": 120 },
+        "maskedRecipientEmail": { "type": "string", "maxLength": 254 },
+        "saltedEmailHash": { "type": "string", "minLength": 64, "maxLength": 64, "pattern": "^[a-f0-9]{64}$" },
+        "tokenStatus": {
+          "type": "string",
+          "enum": ["active", "superseded", "revoked", "accepted"],
+          "maxLength": 20
+        },
+        "expiresAtIso": { "type": "string", "maxLength": 40 },
+        "expiresAtEpochMs": { "type": "number" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": [
+        "tokenHash",
+        "invitationId",
+        "invitationType",
+        "inviterDisplayName",
+        "maskedRecipientEmail",
+        "saltedEmailHash",
+        "tokenStatus",
+        "expiresAtIso",
+        "expiresAtEpochMs",
+        "createdAt",
+        "updatedAt"
+      ]
+    },
+    "AuditLogRecord": {
+      "title": "AuditLogRecord",
+      "description": "Immutable security and lifecycle audit log entry containing actor, target identifier, timestamp, and outcome without sensitive message contents.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "visibilityScope": { "type": "string", "enum": ["admin"], "maxLength": 16 },
+        "eventType": {
+          "type": "string",
+          "enum": [
+            "invitation_created",
+            "invitation_send_attempted",
+            "invitation_resent",
+            "invitation_manual_link_generated",
+            "invitation_revoked",
+            "invitation_accepted",
+            "workspace_created",
+            "sharing_permission_changed",
+            "account_deleted"
+          ],
+          "maxLength": 48
+        },
+        "actorUid": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "targetId": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "outcome": { "type": "string", "enum": ["success", "failure", "unconfigured"], "maxLength": 24 },
+        "summaryCode": { "type": "string", "maxLength": 200 },
+        "createdAtIso": { "type": "string", "maxLength": 40 },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": [
+        "id",
+        "visibilityScope",
+        "eventType",
+        "actorUid",
+        "targetId",
+        "outcome",
+        "summaryCode",
+        "createdAtIso",
+        "createdAt"
+      ]
+    },
+    "EvidenceRecord": {
+      "title": "EvidenceRecord",
+      "description": "Experience claim and supporting verification status belonging to a specific user.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "userId": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "claimText": { "type": "string", "minLength": 1, "maxLength": 2000 },
+        "category": {
+          "type": "string",
+          "enum": [
+            "demonstrated_skill",
+            "transferable_experience",
+            "training_in_progress",
+            "completed_training",
+            "not_yet_demonstrated"
+          ],
+          "maxLength": 40
+        },
+        "sourceDocumentOrConfirmation": { "type": "string", "maxLength": 500 },
+        "sourceExcerpt": { "type": "string", "maxLength": 2000 },
+        "verificationStatus": {
+          "type": "string",
+          "enum": [
+            "Confirmed by Nora",
+            "Supported by uploaded document",
+            "Needs clarification",
+            "Draft wording only"
+          ],
+          "maxLength": 50
+        },
+        "dateAdded": { "type": "string", "maxLength": 30 },
+        "mayUseInApplications": { "type": "boolean" },
+        "tags": { "type": "array", "description": "Bounded tag strings (<= 20)." },
+        "sourceDocumentId": { "type": "string", "maxLength": 128 },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": [
+        "id",
+        "userId",
+        "claimText",
+        "category",
+        "sourceDocumentOrConfirmation",
+        "sourceExcerpt",
+        "verificationStatus",
+        "dateAdded",
+        "mayUseInApplications",
+        "tags",
+        "sourceDocumentId",
+        "createdAt",
+        "updatedAt"
+      ]
+    },
+    "OpportunityRecord": {
+      "title": "OpportunityRecord",
+      "description": "Job opportunity, source metadata, authenticity flags, and compensation breakdown.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "userId": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "employer": { "type": "string", "minLength": 1, "maxLength": 300 },
+        "title": { "type": "string", "minLength": 1, "maxLength": 300 },
+        "officialWebsite": { "type": "string", "maxLength": 500 },
+        "postingUrl": { "type": "string", "maxLength": 800 },
+        "applicationUrl": { "type": "string", "maxLength": 800 },
+        "location": { "type": "string", "maxLength": 300 },
+        "eligibleLocations": { "type": "string", "maxLength": 500 },
+        "workArrangement": {
+          "type": "string",
+          "enum": ["remote", "hybrid", "onsite", "unknown"],
+          "maxLength": 20
+        },
+        "employmentType": {
+          "type": "string",
+          "enum": ["full_time", "part_time", "contract", "unknown"],
+          "maxLength": 20
+        },
+        "datePosted": { "type": "string", "maxLength": 30 },
+        "dateFirstFound": { "type": "string", "maxLength": 30 },
+        "dateLastVerified": { "type": "string", "maxLength": 30 },
+        "openingAvailabilityStatus": {
+          "type": "string",
+          "enum": ["Unverified", "Seen on official careers page", "No longer listed / Closed"],
+          "maxLength": 60
+        },
+        "intakeChannel": { "type": "string", "maxLength": 80 },
+        "rawDescriptionText": { "type": "string", "maxLength": 25000 },
+        "compensation": { "type": "object", "description": "Separated employer-published vs third-party compensation." },
+        "requiredQualifications": { "type": "array" },
+        "preferredQualifications": { "type": "array" },
+        "coreDuties": { "type": "array" },
+        "knownContactIds": { "type": "array" },
+        "stage": { "type": "string", "maxLength": 60 },
+        "appliedConfirmedByNora": {
+          "type": "string",
+          "enum": ["unconfirmed", "not_applied", "applied"],
+          "maxLength": 20
+        },
+        "nextAction": { "type": "string", "maxLength": 500 },
+        "nextActionDueDate": { "type": "string", "maxLength": 30 },
+        "writtenAdvancementInfo": { "type": "string", "maxLength": 2000 },
+        "trainingProvidedInfo": { "type": "string", "maxLength": 2000 },
+        "commuteAndScheduleNotes": { "type": "string", "maxLength": 2000 },
+        "outstandingQuestions": { "type": "array" },
+        "authenticityFlags": { "type": "array" },
+        "liveVerificationLog": { "type": "object" },
+        "archived": { "type": "boolean" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": [
+        "id",
+        "userId",
+        "employer",
+        "title",
+        "officialWebsite",
+        "postingUrl",
+        "applicationUrl",
+        "location",
+        "eligibleLocations",
+        "workArrangement",
+        "employmentType",
+        "datePosted",
+        "dateFirstFound",
+        "dateLastVerified",
+        "openingAvailabilityStatus",
+        "intakeChannel",
+        "rawDescriptionText",
+        "compensation",
+        "requiredQualifications",
+        "preferredQualifications",
+        "coreDuties",
+        "knownContactIds",
+        "stage",
+        "appliedConfirmedByNora",
+        "nextAction",
+        "nextActionDueDate",
+        "writtenAdvancementInfo",
+        "trainingProvidedInfo",
+        "commuteAndScheduleNotes",
+        "outstandingQuestions",
+        "authenticityFlags",
+        "liveVerificationLog",
+        "archived",
+        "createdAt",
+        "updatedAt"
+      ]
+    },
+    "RequirementAssessmentRecord": {
+      "title": "RequirementAssessmentRecord",
+      "description": "Requirement-by-requirement job fit assessment tied to an OpportunityRecord.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "userId": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "opportunityId": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "requirementText": { "type": "string", "minLength": 1, "maxLength": 1000 },
+        "priority": { "type": "string", "enum": ["Required", "Preferred"], "maxLength": 20 },
+        "noraEvidenceSummary": { "type": "string", "maxLength": 2000 },
+        "linkedEvidenceIds": { "type": "array" },
+        "assessment": {
+          "type": "string",
+          "enum": ["Direct evidence", "Transferable evidence", "Gap", "Unknown"],
+          "maxLength": 40
+        },
+        "gapNature": {
+          "type": "string",
+          "enum": ["none", "hard_eligibility", "trainable_skill", "missing_evidence_check"],
+          "maxLength": 40
+        },
+        "nextStep": { "type": "string", "maxLength": 1000 },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": [
+        "id",
+        "userId",
+        "opportunityId",
+        "requirementText",
+        "priority",
+        "noraEvidenceSummary",
+        "linkedEvidenceIds",
+        "assessment",
+        "gapNature",
+        "nextStep",
+        "createdAt",
+        "updatedAt"
+      ]
+    },
+    "ContactRecord": {
+      "title": "ContactRecord",
+      "description": "Professional contact and communication boundary tracker.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "userId": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "name": { "type": "string", "minLength": 1, "maxLength": 200 },
+        "organization": { "type": "string", "maxLength": 300 },
+        "role": { "type": "string", "maxLength": 200 },
+        "roleVerified": { "type": "boolean" },
+        "relationship": { "type": "string", "maxLength": 300 },
+        "source": { "type": "string", "maxLength": 300 },
+        "contactChannelNote": { "type": "string", "maxLength": 500 },
+        "lastContactDate": { "type": "string", "maxLength": 30 },
+        "nextAction": { "type": "string", "maxLength": 500 },
+        "nextActionDueDate": { "type": "string", "maxLength": 30 },
+        "replyStatus": { "type": "string", "maxLength": 60 },
+        "doNotContact": { "type": "boolean" },
+        "linkedOpportunityId": { "type": "string", "maxLength": 128 },
+        "notes": { "type": "string", "maxLength": 3000 },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": [
+        "id",
+        "userId",
+        "name",
+        "organization",
+        "role",
+        "roleVerified",
+        "relationship",
+        "source",
+        "contactChannelNote",
+        "lastContactDate",
+        "nextAction",
+        "nextActionDueDate",
+        "replyStatus",
+        "doNotContact",
+        "linkedOpportunityId",
+        "notes",
+        "createdAt",
+        "updatedAt"
+      ]
+    },
+    "OutreachDraftRecord": {
+      "title": "OutreachDraftRecord",
+      "description": "Outreach message draft and approval/communication log.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "userId": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "contactId": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "opportunityId": { "type": "string", "maxLength": 128 },
+        "messageType": { "type": "string", "maxLength": 60 },
+        "recipientSummary": { "type": "string", "maxLength": 300 },
+        "bodyText": { "type": "string", "minLength": 1, "maxLength": 8000 },
+        "evidenceUsed": { "type": "array" },
+        "missingInformation": { "type": "array" },
+        "reasoning": { "type": "string", "maxLength": 2000 },
+        "suggestedNextAction": { "type": "string", "maxLength": 1000 },
+        "approvedByNora": { "type": "boolean" },
+        "approvedAt": { "type": "string", "maxLength": 40 },
+        "sentState": { "type": "string", "enum": ["draft", "approved", "logged_sent"], "maxLength": 20 },
+        "manuallySentLoggedAt": { "type": "string", "maxLength": 40 },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": [
+        "id",
+        "userId",
+        "contactId",
+        "opportunityId",
+        "messageType",
+        "recipientSummary",
+        "bodyText",
+        "evidenceUsed",
+        "missingInformation",
+        "reasoning",
+        "suggestedNextAction",
+        "approvedByNora",
+        "approvedAt",
+        "sentState",
+        "manuallySentLoggedAt",
+        "createdAt",
+        "updatedAt"
+      ]
+    },
+    "ApplicationVersionRecord": {
+      "title": "ApplicationVersionRecord",
+      "description": "Tailored application version and immutable submission snapshot.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "userId": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "opportunityId": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "versionLabel": { "type": "string", "minLength": 1, "maxLength": 200 },
+        "tailoredResumeText": { "type": "string", "maxLength": 30000 },
+        "coverNoteText": { "type": "string", "maxLength": 10000 },
+        "whyThisRoleText": { "type": "string", "maxLength": 6000 },
+        "applicationQuestionsText": { "type": "string", "maxLength": 12000 },
+        "interviewTalkingPoints": { "type": "string", "maxLength": 8000 },
+        "checklistCompleted": { "type": "object" },
+        "submitted": { "type": "boolean" },
+        "submittedDate": { "type": "string", "maxLength": 30 },
+        "submissionNotes": { "type": "string", "maxLength": 1000 },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": [
+        "id",
+        "userId",
+        "opportunityId",
+        "versionLabel",
+        "tailoredResumeText",
+        "coverNoteText",
+        "whyThisRoleText",
+        "applicationQuestionsText",
+        "interviewTalkingPoints",
+        "checklistCompleted",
+        "submitted",
+        "submittedDate",
+        "submissionNotes",
+        "createdAt",
+        "updatedAt"
+      ]
+    },
+    "TaskRecord": {
+      "title": "TaskRecord",
+      "description": "Action item with plain-English purpose and follow-up date.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "userId": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "title": { "type": "string", "minLength": 1, "maxLength": 400 },
+        "whyItMatters": { "type": "string", "maxLength": 1500 },
+        "category": {
+          "type": "string",
+          "enum": ["opportunity", "relationship", "preparation", "followup"],
+          "maxLength": 30
+        },
+        "estimatedMinutes": { "type": "number" },
+        "dueDate": { "type": "string", "maxLength": 30 },
+        "scheduledBucket": { "type": "string", "enum": ["today", "tomorrow", "later"], "maxLength": 20 },
+        "completed": { "type": "boolean" },
+        "completedAt": { "type": "string", "maxLength": 40 },
+        "archived": { "type": "boolean" },
+        "linkedOpportunityId": { "type": "string", "maxLength": 128 },
+        "linkedContactId": { "type": "string", "maxLength": 128 },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": [
+        "id",
+        "userId",
+        "title",
+        "whyItMatters",
+        "category",
+        "estimatedMinutes",
+        "dueDate",
+        "scheduledBucket",
+        "completed",
+        "completedAt",
+        "archived",
+        "linkedOpportunityId",
+        "linkedContactId",
+        "createdAt",
+        "updatedAt"
+      ]
+    },
+    "PracticeSessionRecord": {
+      "title": "PracticeSessionRecord",
+      "description": "Completed rehearsal or CRM simulation session with feedback.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "userId": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "mode": { "type": "string", "maxLength": 40 },
+        "promptQuestion": { "type": "string", "minLength": 1, "maxLength": 1000 },
+        "noraResponse": { "type": "string", "minLength": 1, "maxLength": 10000 },
+        "feedback": { "type": "object" },
+        "durationMinutes": { "type": "number" },
+        "linkedOpportunityId": { "type": "string", "maxLength": 128 },
+        "sessionState": { "type": "string", "enum": ["finalized"], "maxLength": 20 },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": [
+        "id",
+        "userId",
+        "mode",
+        "promptQuestion",
+        "noraResponse",
+        "feedback",
+        "durationMinutes",
+        "linkedOpportunityId",
+        "sessionState",
+        "createdAt",
+        "updatedAt"
+      ]
+    },
+    "LearningItemRecord": {
+      "title": "LearningItemRecord",
+      "description": "Targeted learning plan item linked to actual job requirements.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "userId": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "title": { "type": "string", "minLength": 1, "maxLength": 400 },
+        "tiedToRequirement": { "type": "string", "maxLength": 600 },
+        "linkedOpportunityId": { "type": "string", "maxLength": 128 },
+        "progressStage": {
+          "type": "string",
+          "enum": ["Planned", "In progress", "Completed"],
+          "maxLength": 30
+        },
+        "estimatedHours": { "type": "number" },
+        "practicalExercise": { "type": "string", "maxLength": 1500 },
+        "honestFramingNote": { "type": "string", "maxLength": 1000 },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": [
+        "id",
+        "userId",
+        "title",
+        "tiedToRequirement",
+        "linkedOpportunityId",
+        "progressStage",
+        "estimatedHours",
+        "practicalExercise",
+        "honestFramingNote",
+        "createdAt",
+        "updatedAt"
+      ]
+    },
+    "TimeLogRecord": {
+      "title": "TimeLogRecord",
+      "description": "Optional user-logged job search time entry.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "userId": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "date": { "type": "string", "maxLength": 30 },
+        "activity": { "type": "string", "maxLength": 120 },
+        "minutes": { "type": "number" },
+        "note": { "type": "string", "maxLength": 500 },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "userId", "date", "activity", "minutes", "note", "createdAt", "updatedAt"]
+    },
+    "PrivateDocumentMeta": {
+      "title": "PrivateDocumentMeta",
+      "description": "Metadata and private storage reference for an uploaded user document.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "userId": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "fileName": { "type": "string", "minLength": 1, "maxLength": 255 },
+        "mimeType": { "type": "string", "minLength": 1, "maxLength": 120 },
+        "byteSize": { "type": "number" },
+        "docCategory": {
+          "type": "string",
+          "enum": ["resume", "job_description", "supporting_document"],
+          "maxLength": 40
+        },
+        "linkedOpportunityId": { "type": "string", "maxLength": 128 },
+        "storageRef": { "type": "string", "minLength": 1, "maxLength": 255 },
+        "sha256": { "type": "string", "minLength": 16, "maxLength": 128 },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": [
+        "id",
+        "userId",
+        "fileName",
+        "mimeType",
+        "byteSize",
+        "docCategory",
+        "linkedOpportunityId",
+        "storageRef",
+        "sha256",
+        "createdAt",
+        "updatedAt"
+      ]
+    },
+    "PrivateDocumentBlob": {
+      "title": "PrivateDocumentBlob",
+      "description": "Owner-isolated private file content record (never publicly URL-addressable or listable).",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "userId": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "documentId": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "encoding": { "type": "string", "enum": ["utf8", "base64"], "maxLength": 16 },
+        "content": { "type": "string", "minLength": 1, "maxLength": 750000 },
+        "byteSize": { "type": "number" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": [
+        "id",
+        "userId",
+        "documentId",
+        "encoding",
+        "content",
+        "byteSize",
+        "createdAt",
+        "updatedAt"
+      ]
+    },
+    "RelationshipEdgeRecord": {
+      "title": "RelationshipEdgeRecord",
+      "description": "Owner-isolated typed relationship edge in the Evidence Relationship Graph linking workspace experience, evidence, skills, requirements, opportunities, learning items, contacts, and employers.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "userId": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "canonicalKey": { "type": "string", "minLength": 3, "maxLength": 400 },
+        "sourceType": {
+          "type": "string",
+          "enum": ["experience", "evidence", "skill", "requirement", "opportunity", "learning", "contact", "employer"],
+          "maxLength": 30
+        },
+        "sourceId": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "sourceLabel": { "type": "string", "minLength": 1, "maxLength": 300 },
+        "targetType": {
+          "type": "string",
+          "enum": ["experience", "evidence", "skill", "requirement", "opportunity", "learning", "contact", "employer"],
+          "maxLength": 30
+        },
+        "targetId": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "targetLabel": { "type": "string", "minLength": 1, "maxLength": 300 },
+        "relationshipType": {
+          "type": "string",
+          "enum": [
+            "demonstrates",
+            "supports",
+            "has_requirement",
+            "requires",
+            "teaches",
+            "claims_affiliation_with",
+            "confirmed_affiliation_with",
+            "offered_by",
+            "adjacent_to"
+          ],
+          "maxLength": 40
+        },
+        "requirementPriority": {
+          "type": "string",
+          "enum": ["Required", "Preferred", "N/A"],
+          "maxLength": 20
+        },
+        "evidenceIds": { "type": "array", "description": "Bounded accessible evidence or private document IDs (<= 20)." },
+        "rejectedEvidenceIds": { "type": "array", "description": "Bounded evidence IDs present when suggestion was rejected (<= 20)." },
+        "status": {
+          "type": "string",
+          "enum": ["suggested", "confirmed", "rejected"],
+          "maxLength": 20
+        },
+        "origin": {
+          "type": "string",
+          "enum": ["user", "document_extraction", "ai_suggestion"],
+          "maxLength": 30
+        },
+        "explanationNote": { "type": "string", "maxLength": 1000 },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": [
+        "id",
+        "userId",
+        "canonicalKey",
+        "sourceType",
+        "sourceId",
+        "sourceLabel",
+        "targetType",
+        "targetId",
+        "targetLabel",
+        "relationshipType",
+        "requirementPriority",
+        "evidenceIds",
+        "rejectedEvidenceIds",
+        "status",
+        "origin",
+        "explanationNote",
+        "createdAt",
+        "updatedAt"
+      ]
+    },
+    "AuthenticityReviewRecord": {
+      "title": "AuthenticityReviewRecord",
+      "description": "Owner-isolated Authenticity & Safety Review evaluating employer identity, opening authenticity, recruiter affiliation, sender/channel authenticity, and requested actions separately.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "userId": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "opportunityId": { "type": "string", "maxLength": 128 },
+        "subjectLabel": { "type": "string", "minLength": 1, "maxLength": 240 },
+        "officialEmployerDomain": { "type": "string", "maxLength": 255 },
+        "reviewScope": { "type": "string", "minLength": 1, "maxLength": 400 },
+        "overallStatus": {
+          "type": "string",
+          "enum": [
+            "not_reviewed",
+            "partially_corroborated",
+            "unresolved_concerns",
+            "high_risk_request_detected",
+            "corroborated_within_stated_scope",
+            "documented_impersonation_confirmation"
+          ],
+          "maxLength": 48
+        },
+        "dimensionAssessments": {
+          "type": "object",
+          "description": "Independent 5-dimension assessment map (employer_identity, opening_authenticity, recruiter_affiliation, sender_channel_authenticity, requested_action)."
+        },
+        "impersonationConfirmation": {
+          "type": "object",
+          "description": "Documented impersonation confirmation metadata requiring who confirmed it, how identity was established, and supporting artifact ID."
+        },
+        "userDecision": {
+          "type": "string",
+          "enum": [
+            "undecided",
+            "proceed_within_scope",
+            "pause_until_verified",
+            "decline_and_disengage"
+          ],
+          "maxLength": 32
+        },
+        "userDecisionNote": { "type": "string", "maxLength": 2000 },
+        "liveResearchStatus": {
+          "type": "string",
+          "enum": ["not_requested", "available", "unavailable"],
+          "maxLength": 20
+        },
+        "liveResearchSummary": { "type": "string", "maxLength": 2000 },
+        "whatWasChecked": { "type": "array", "description": "Bounded plain-English summary strings of checks performed (<= 15)." },
+        "whatRemainsUnknown": { "type": "array", "description": "Bounded plain-English summary strings of remaining unknowns (<= 15)." },
+        "nextVerificationSteps": { "type": "array", "description": "Bounded actionable verification steps (<= 12)." },
+        "artifacts": { "type": "array", "description": "Bounded ReviewArtifact maps (<= 25)." },
+        "checks": { "type": "array", "description": "Bounded VerificationCheck maps (<= 20)." },
+        "findings": { "type": "array", "description": "Bounded RiskFinding maps separating observed fact from interpretation (<= 40)." },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": [
+        "id",
+        "userId",
+        "opportunityId",
+        "subjectLabel",
+        "officialEmployerDomain",
+        "reviewScope",
+        "overallStatus",
+        "dimensionAssessments",
+        "impersonationConfirmation",
+        "userDecision",
+        "userDecisionNote",
+        "liveResearchStatus",
+        "liveResearchSummary",
+        "whatWasChecked",
+        "whatRemainsUnknown",
+        "nextVerificationSteps",
+        "artifacts",
+        "checks",
+        "findings",
+        "createdAt",
+        "updatedAt"
+      ]
+    }
+  },
+  "firestore": {
+    "/admins/{adminUid}": {
+      "schema": "AdminRecord",
+      "description": "Application-level administrator role registry (grants invitation management only; zero access to /users/*)."
+    },
+    "/invitations/{invitationId}": {
+      "schema": "InvitationRecord",
+      "description": "Administrator-managed job-seeker invitations bound to recipient email and SHA-256 token hash."
+    },
+    "/invitationTokens/{tokenHash}": {
+      "schema": "InvitationTokenLookup",
+      "description": "Non-listable SHA-256 token capability lookup documents containing only masked metadata."
+    },
+    "/auditLogs/{logId}": {
+      "schema": "AuditLogRecord",
+      "description": "Append-only security audit log for invitation, workspace creation, sharing, and account lifecycle events."
+    },
+    "/users/{userId}": {
+      "schema": "UserProfile",
+      "description": "Owner-isolated user profile, career preferences, onboarding progress, and sharing settings."
+    },
+    "/users/{userId}/evidence/{evidenceId}": {
+      "schema": "EvidenceRecord",
+      "description": "User-scoped experience claims and verification records."
+    },
+    "/users/{userId}/opportunities/{opportunityId}": {
+      "schema": "OpportunityRecord",
+      "description": "User-scoped job opportunities, compensation records, and authenticity flags."
+    },
+    "/users/{userId}/assessments/{assessmentId}": {
+      "schema": "RequirementAssessmentRecord",
+      "description": "Requirement-by-requirement fit assessments linked to opportunities."
+    },
+    "/users/{userId}/contacts/{contactId}": {
+      "schema": "ContactRecord",
+      "description": "User-scoped professional contacts and outreach statuses."
+    },
+    "/users/{userId}/outreachDrafts/{draftId}": {
+      "schema": "OutreachDraftRecord",
+      "description": "User-scoped outreach drafts and approved communication history."
+    },
+    "/users/{userId}/applicationVersions/{versionId}": {
+      "schema": "ApplicationVersionRecord",
+      "description": "User-scoped tailored application packets and immutable submission records."
+    },
+    "/users/{userId}/tasks/{taskId}": {
+      "schema": "TaskRecord",
+      "description": "User-scoped tasks, priorities, and follow-up dates."
+    },
+    "/users/{userId}/practiceSessions/{sessionId}": {
+      "schema": "PracticeSessionRecord",
+      "description": "User-scoped completed interview and CRM practice sessions."
+    },
+    "/users/{userId}/learningItems/{itemId}": {
+      "schema": "LearningItemRecord",
+      "description": "User-scoped learning plan items tied to job requirements."
+    },
+    "/users/{userId}/timeLogs/{logId}": {
+      "schema": "TimeLogRecord",
+      "description": "User-scoped activity time logs."
+    },
+    "/users/{userId}/documents/{documentId}": {
+      "schema": "PrivateDocumentMeta",
+      "description": "Metadata for private uploaded resumes and job documents."
+    },
+    "/users/{userId}/documentBlobs/{documentId}": {
+      "schema": "PrivateDocumentBlob",
+      "description": "Strictly non-listable owner-only private document payloads."
+    },
+    "/users/{userId}/relationships/{relationshipId}": {
+      "schema": "RelationshipEdgeRecord",
+      "description": "Owner-isolated typed relationships in the Evidence Relationship Graph."
+    },
+    "/users/{userId}/authenticityReviews/{reviewId}": {
+      "schema": "AuthenticityReviewRecord",
+      "description": "Owner-isolated Authenticity & Safety Reviews with artifacts, verification checks, and risk findings."
+    }
+  }
+}
